@@ -99,7 +99,7 @@ int main(void)
   printf("====================================\r\n");
   printf("F407_JOHO Servo Debug Starting...\r\n");
   printf("USART1(PA9-TX) = Debug Console @115200\r\n");
-  printf("USART3(PB10-TX,PB11-RX) = Servo Bus @115200\r\n");
+  printf("USART3(PB10-TX -> Servo RX, PB11-RX <- Servo TX) @115200\r\n");
   printf("====================================\r\n");
 
   /* 1. Ping 舵机 ID=1，检测舵机是否在线 */

@@ -142,13 +142,13 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     /**USART3 GPIO Configuration
-    PB10     ------> USART3_TX (半双工模式: TX = 数据线)
-    PB11     ------> 不再用作RX (半双工模式下RX引脚被释放)
-    注意: 舵机总线是单线半双工, TX和RX需在外部短接或使用HDSEL模式
+    PB10     ------> USART3_TX (发送指令到舵机)
+    PB11     ------> USART3_RX (接收舵机返回数据)
+    注意: TX和RX是独立引脚,舵机有单独的TX线发回数据,使用全双工模式
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_10;  // 仅PB10用于半双工数据线
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;  // 开漏输出+外部上拉,适合单线总线
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -244,10 +244,6 @@ void USART_InitServoUsart(UART_HandleTypeDef *huart)
     servoUsartData.sendBuf = &servoUsart_sendBuf;
     servoUsartData.recvBuf = &servoUsart_recvBuf;
     servoUsartData.huart = huart;
-
-    // 使能 USART3 半双工模式 (HDSEL)：单线同时收发
-    // 舵机总线是单线半双工，必须开启此模式
-    huart->Instance->CR3 |= USART_CR3_HDSEL;
 
     // 启动 USART3 中断接收，每收到一个字节自动推入环形缓冲区
     HAL_UART_Receive_IT(huart, &rx_byte, 1);
