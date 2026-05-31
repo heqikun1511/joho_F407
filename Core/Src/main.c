@@ -58,6 +58,14 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* USART1 直接寄存器方式发送一个字节（绕过HAL，纯硬件测试） */
+static void USART1_SendByte(uint8_t byte)
+{
+    /* 等待TXE（发送数据寄存器空） */
+    while (!(USART1->SR & USART_SR_TXE)) {}
+    /* 写入数据寄存器 */
+    USART1->DR = byte;
+}
 
 /* USER CODE END 0 */
 
@@ -78,6 +86,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  /* === LED 初始化（正点原子F407: DS0=PF9, 低电平亮）=== */
+  __HAL_RCC_GPIOF_CLK_ENABLE();
+  GPIO_InitTypeDef led = {0};
+  led.Pin = GPIO_PIN_9;
+  led.Mode = GPIO_MODE_OUTPUT_PP;
+  led.Pull = GPIO_NOPULL;
+  led.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOF, &led);
 
   /* USER CODE END Init */
 
@@ -94,60 +110,40 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  /* === USART1 硬件测试：直接寄存器发送一个字节 ===
+     如果这一步 PA9 有波形/串口能看到 'U'(0x55)，说明USART1硬件没问题
+     如果看不到，CH340接线可能错了 */
+  HAL_Delay(50);  // 等USART稳定
+  USART1_SendByte('U');  // 0x55 -> 01010101，示波器看最清楚
+  HAL_Delay(10);
+  USART1_SendByte('A');
+  HAL_Delay(10);
+  USART1_SendByte('R');
+  HAL_Delay(10);
+  USART1_SendByte('T');
+  HAL_Delay(10);
+  USART1_SendByte('\n');
+  HAL_Delay(10);
+
   USART_InitServoUsart(&huart3);
   JOHO_STATUS statusCode;
 
   printf("====================================\r\n");
   printf("F407_JOHO Servo Debug Starting...\r\n");
-  printf("USART6(PC6-TX) = Debug Console @115200\r\n");
+  printf("USART1(PA9-TX) = Debug Console @115200\r\n");
   printf("USART3(PB10-TX -> Servo RX, PB11-RX <- Servo TX) @115200\r\n");
   printf("====================================\r\n");
 
-  /* 1. Ping 舵机 ID=1，检测舵机是否在线 */
-  printf("\r\n[STEP 1] Pinging Servo ID=1...\r\n");
-  statusCode = US_Ping(servoUsart, 1);
-  if (statusCode == JOHO_STATUS_SUCCESS) {
-      printf("[OK] Servo ID=1 responded!\r\n");
-  } else {
-      printf("[FAIL] Servo ID=1 no response! statusCode=%d\r\n", statusCode);
-      printf("  -> Check: power supply? wiring? baud rate? servo ID?\r\n");
-      printf("  -> 0=Success 1=Fail 2=Timeout 3=WrongHeader\r\n");
-      printf("  -> 4=UnknownID 5=SizeTooBig 6=ChecksumErr 7=IDnotMatch\r\n");
-  }
-
-  /* 2. 使能舵机扭矩 */
-  printf("\r\n[STEP 2] Enabling Torque on Servo ID=1...\r\n");
-  SET_Torque(servoUsart, 1, 1);
-  SysTick_DelayMs(200);
-
-  /* 3. 再次 Ping 确认扭矩开启后舵机仍然在线 */
-  printf("\r\n[STEP 3] Verifying Servo ID=1 after torque enable...\r\n");
-  statusCode = US_Ping(servoUsart, 1);
-  printf("Ping result after torque: %d\r\n", statusCode);
-
-  /* 4. 读取当前角度 */
-  printf("\r\n[STEP 4] Reading initial position...\r\n");
-  uint16_t initPos = USL_GETPositionVal(servoUsart, 1);
-  if (initPos <= 4096) {
-      printf("[OK] Current position: %d (0-4095)\r\n", initPos);
-  } else {
-      printf("[FAIL] Read position failed, returned=0x%04X\r\n", initPos);
-  }
+  /* 半双工模式：只发送不接收，直接控制舵机 */
+  printf("\r\n=== Send-only mode: Sweeping Servo ID=1 ===\r\n");
+  printf("If servo moves, USART3 wiring is OK!\r\n");
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  printf("\r\n====================================\r\n");
-  printf("Servo start sweeping: 0 -> 4095 -> 0 ...\r\n");
-  printf("====================================\r\n");
-
-  // 先使能舵机扭矩（再次确保）
-  SET_Torque(servoUsart, 1, 1);
-  SysTick_DelayMs(100);
-
-  uint8_t sid = 1;
-  uint16_t angle = 0;
+  int16_t angle = 0;
   int8_t direction = 1;
   uint32_t loopCount = 0;
 
@@ -155,23 +151,24 @@ int main(void)
   {
     loopCount++;
 
-    // 持续来回扫动：0 → 4095 → 0 → 4095 ...
-    USL_SetServoAngle(servoUsart, sid, angle, 800);
+    HAL_GPIO_TogglePin(GPIOF, GPIO_PIN_9);
 
-    // 每 500 步或方向切换时打印一次
+    // 发送角度指令（不等待回复）
+    USL_SetServoAngle(servoUsart, 1, angle, 800);
+
     if (angle % 500 == 0 || angle == 0 || angle == 4095) {
-        printf("[Loop %lu] Angle: %d, Dir: %d\r\n", loopCount, angle, direction);
+        printf("[Loop %lu] Sending angle=%d\r\n", loopCount, angle);
     }
 
     angle += direction * 50;
     if (angle >= 4095) {
         angle = 4095;
         direction = -1;
-        printf(">>> Direction reversed: now going DOWN\r\n");
+        printf(">>> Direction DOWN\r\n");
     } else if (angle <= 0) {
         angle = 0;
         direction = 1;
-        printf(">>> Direction reversed: now going UP\r\n");
+        printf(">>> Direction UP\r\n");
     }
 
     SysTick_DelayMs(30);
@@ -203,7 +200,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 336;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;

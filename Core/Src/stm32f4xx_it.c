@@ -201,4 +201,14 @@ void SysTick_Handler(void)
 
 /* USER CODE BEGIN 1 */
 
+/**
+  * @brief This function handles USART3 global interrupt.
+  *        USART3 is used for servo communication (PB10-TX, PB11-RX).
+  *        Receives servo response bytes into ring buffer via HAL_UART_RxCpltCallback.
+  */
+void USART3_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart3);
+}
+
 /* USER CODE END 1 */

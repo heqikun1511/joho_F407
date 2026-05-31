@@ -92,7 +92,7 @@ void MX_USART3_UART_Init(void)
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.Mode = UART_MODE_TX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   if (HAL_UART_Init(&huart3) != HAL_OK)
@@ -181,6 +181,10 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* USART3 interrupt NVIC configuration (for servo response RX) */
+    HAL_NVIC_SetPriority(USART3_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
 
   /* USER CODE BEGIN USART3_MspInit 1 */
 
@@ -280,7 +284,7 @@ static uint8_t rx_byte;  // USART3 单字节接收缓冲区
  */
 int __io_putchar(int ch)
 {
-    HAL_UART_Transmit(&huart6, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
     return ch;
 }
 
@@ -290,7 +294,7 @@ int __io_putchar(int ch)
 int __io_getchar(void)
 {
     uint8_t ch;
-    HAL_UART_Receive(&huart6, &ch, 1, HAL_MAX_DELAY);
+    HAL_UART_Receive(&huart1, &ch, 1, HAL_MAX_DELAY);
     return ch;
 }
 
@@ -311,9 +315,6 @@ void USART_InitServoUsart(UART_HandleTypeDef *huart)
     servoUsartData.sendBuf = &servoUsart_sendBuf;
     servoUsartData.recvBuf = &servoUsart_recvBuf;
     servoUsartData.huart = huart;
-
-    // 启动 USART3 中断接收，每收到一个字节自动推入环形缓冲区
-    HAL_UART_Receive_IT(huart, &rx_byte, 1);
 }
 /* USER CODE END 1 */
 
