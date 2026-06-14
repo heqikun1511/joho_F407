@@ -92,7 +92,7 @@ void MX_USART3_UART_Init(void)
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
   huart3.Init.StopBits = UART_STOPBITS_1;
   huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX;
+  huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   if (HAL_UART_Init(&huart3) != HAL_OK)
@@ -100,7 +100,7 @@ void MX_USART3_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART3_Init 2 */
-
+  /* 全双工模式: PB10=TX, PB11=RX, 不使用HDSEL */
   /* USER CODE END USART3_Init 2 */
 
 }
@@ -171,13 +171,21 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     __HAL_RCC_USART3_CLK_ENABLE();
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    /**USART3 GPIO Configuration
-    PB10     ------> USART3_TX
-    PB11     ------> USART3_RX
+    /**USART3 GPIO Configuration (全双工: PB10=TX, PB11=RX)
+    PB10     ------> USART3_TX (推挽输出)
+    PB11     ------> USART3_RX (浮空输入)
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+    GPIO_InitStruct.Pin = GPIO_PIN_10;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* PB11: USART3_RX - 必须使用复用推挽输出模式，否则USART3收不到数据 */
+    GPIO_InitStruct.Pin = GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -315,6 +323,9 @@ void USART_InitServoUsart(UART_HandleTypeDef *huart)
     servoUsartData.sendBuf = &servoUsart_sendBuf;
     servoUsartData.recvBuf = &servoUsart_recvBuf;
     servoUsartData.huart = huart;
+
+    /* 启动 USART3 中断接收，使舵机返回数据能进入环形缓冲区 */
+    HAL_UART_Receive_IT(huart, &rx_byte, 1);
 }
 /* USER CODE END 1 */
 

@@ -22,8 +22,8 @@
 
 #define JOHO_US_NUM 254 //舵机ID最大值
 
-// 串口通讯超时时间
-#define JOHO_TIMEOUT_MS 100
+// 串口通讯超时时间 (原100ms, 增加到200ms保证充分等待)
+#define JOHO_TIMEOUT_MS 200
 
 // 在串口舵机通讯系统协议中, 使用的字节序为Little Endian(小端字节序/小端格式)
 // STM32系统默认值存储模式为Little Endian
@@ -82,5 +82,18 @@ void USL_SetServoAngle(Usart_DataTypeDef *usart, uint8_t servo_id, \
 				float posi, uint16_t interval);
 
 uint16_t USL_GETPositionVal(Usart_DataTypeDef *usart, uint8_t servo_id);
+
+// 读取舵机供电电压 (返回 0.1V 单位, 失败返回 0xFFFF)
+uint16_t USL_GetVoltage(Usart_DataTypeDef *usart, uint8_t servo_id);
+
+// 读取舵机电流 (有符号, 返回 0.1A? 单位取决于具体舵机, 失败返回 0xFFFF)
+int16_t USL_GetCurrent(Usart_DataTypeDef *usart, uint8_t servo_id);
+
+// 批量读取: 一次通讯获取角度+电压+温度+电流 (更高效)
+// position[0-4095], voltage[0.1V], current[mA], temperature[°C]
+// 返回 0=成功, 非0=错误码
+uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
+                           uint16_t *position, uint16_t *voltage,
+                           int16_t *current, int8_t *temperature);
 
 void SET_Torque(Usart_DataTypeDef *usart, uint8_t servo_id,uint8_t isopen);

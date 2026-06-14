@@ -44,15 +44,19 @@ void USL_Send_HEX(Usart_DataTypeDef *usart, uint8_t size, uint8_t *content){
 }
 
 
-//接收协议帧
+//接收协议帧 - 带调试信息输出
 JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
 	
 		pkg->status = 0; // Package状态初始化	
     uint8_t bIdx = 0; // 接收的数据字节索引
     uint16_t header = 0; // 帧头
 	
+#ifdef DEBUG_SERVO_RAW
+		uint8_t rawBytes[128];
+		uint8_t rawIdx = 0;
+#endif
 	
-		// 启动超时计时,100ms
+		// 启动超时计时,200ms(原100ms,增加余量)
     SysTick_CountdownBegin(JOHO_TIMEOUT_MS);
 		// 如果没有超时
     while (!SysTick_CountdownIsTimeout()){
@@ -84,6 +88,9 @@ JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
             // 接收数据字节
 				
             pkg->content[bIdx] = RingBuffer_ReadByte(usart->recvBuf);
+#ifdef DEBUG_SERVO_RAW
+						if (rawIdx < sizeof(rawBytes)) rawBytes[rawIdx++] = pkg->content[bIdx];
+#endif
             bIdx ++;
             // 判断是否收完
             if (bIdx == (pkg->size-2)){
@@ -132,6 +139,9 @@ JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
             if (header == 0){
                 // 接收第一个字节
                 header = RingBuffer_ReadByte(usart->recvBuf);
+#ifdef DEBUG_SERVO_RAW
+								if (rawIdx < sizeof(rawBytes)) rawBytes[rawIdx++] = header;
+#endif
 
                 // 判断接收的第一个字节是否正确
                 if (header != (JOHO_PACK_RESPONSE_HEADER&0xff)){
@@ -140,7 +150,11 @@ JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
                 }
             }else if(header == (JOHO_PACK_RESPONSE_HEADER&0xFF)){
                 // 接收帧头第二个字节
-                header =  header | (RingBuffer_ReadByte(usart->recvBuf) << 8);
+                uint8_t hb = RingBuffer_ReadByte(usart->recvBuf);
+                header =  header | (hb << 8);
+#ifdef DEBUG_SERVO_RAW
+								if (rawIdx < sizeof(rawBytes)) rawBytes[rawIdx++] = hb;
+#endif
 								// 判断第二个字节是否正确
                 if(header != JOHO_PACK_RESPONSE_HEADER){
                     header = 0;
@@ -156,6 +170,11 @@ JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
 			
 		}
 	// 等待超时
+#ifdef DEBUG_SERVO_RAW
+	printf("\r\n[RAW RX] %d bytes:", rawIdx);
+	for (uint8_t i = 0; i < rawIdx; i++) printf(" %02X", rawBytes[i]);
+	printf("\r\n");
+#endif
     return JOHO_STATUS_TIMEOUT;
 
 }
@@ -212,14 +231,23 @@ uint8_t JOHO_CalcChecksum(PackageTypeDef *pkg){
  * 舵机控制SDK
  **/
 
+// 清空接收缓冲区,等待回显稳定(避免半双工回环的最后1-2字节污染响应)
+static void ClearServoRxBuf_Safe(RingBufferTypeDef *recvBuf)
+{
+    SysTick_DelayMs(2);
+    RingBuffer_Reset(recvBuf);
+}
+
 //Ping 舵机 状态查询
 JOHO_STATUS US_Ping(Usart_DataTypeDef *usart, uint8_t servo_id){
 	uint8_t statusCode; // 状态码
 	uint8_t ehcoServoId; // PING得到的舵机ID
 //	printf("[PING]Send Ping Package\r\n");
-	// ���������
+	// 发送Ping请求
 	JOHO_PackageBuild_Send(usart, servo_id, 2,CMDType_Ping, NULL);
-	// ���շ��ص�Ping
+	// 全双工UART：舵机会回显命令，需清空接收缓冲区
+	ClearServoRxBuf_Safe(usart->recvBuf);
+	// 接收返回的Ping响应
 	PackageTypeDef pkg;
 	statusCode = USL_RecvPackage(usart, &pkg);
 	if(statusCode == JOHO_STATUS_SUCCESS){
@@ -268,14 +296,16 @@ uint16_t value = 0xffff;
 	content[1] =0x02;
 	/// 发送协议帧
 	JOHO_PackageBuild_Send(usart, servo_id, 4,CMDType_Read,content);
+	// 全双工UART：舵机会回显命令，需清空接收缓冲区
+	ClearServoRxBuf_Safe(usart->recvBuf);
 	// 接收返回的pkg
 	PackageTypeDef pkg;
 	statusCode = USL_RecvPackage(usart, &pkg);
-	if(statusCode==0){
-//			printf("[succ]position %d \r\n", pkg.content[1]|(pkg.content[0]<<8));
-			value = pkg.content[1]|(pkg.content[0]<<8);
+	if(statusCode == 0) {
+		value = pkg.content[0] | (pkg.content[1] << 8);
+	} else {
+		value = 0xFFFF;
 	}
-	else {value = value - statusCode;}
 	return value;
 }
 
@@ -288,4 +318,101 @@ void SET_Torque(Usart_DataTypeDef *usart, uint8_t servo_id,uint8_t isopen){
 	// 发送协议帧-示例：FF FF 01 04 03 28 01 CE
 	JOHO_PackageBuild_Send(usart, servo_id, 4,CMDType_Write, content);
 
+}
+
+/**
+ * @brief 读取舵机供电电压
+ * @param usart 串口句柄
+ * @param servo_id 舵机ID
+ * @return 电压值(0.1V单位)，如 120 = 12.0V；失败返回0xFFFF
+ * @note 读取寄存器 0x3A (1字节)
+ */
+uint16_t USL_GetVoltage(Usart_DataTypeDef *usart, uint8_t servo_id)
+{
+    uint8_t statusCode;
+    uint8_t content[2];
+    content[0] = 0x3A;  // 电压寄存器地址
+    content[1] = 0x01;  // 读取1字节
+
+    JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+	// 全双工UART：舵机会回显命令，需清空接收缓冲区
+	ClearServoRxBuf_Safe(usart->recvBuf);
+
+    PackageTypeDef pkg;
+    statusCode = USL_RecvPackage(usart, &pkg);
+    if (statusCode == JOHO_STATUS_SUCCESS) {
+        return (uint16_t)pkg.content[0];
+    }
+    return 0xFFFF;
+}
+
+/**
+ * @brief 读取舵机电流
+ * @param usart 串口句柄
+ * @param servo_id 舵机ID
+ * @return 电流值(有符号)，失败返回0xFFFF
+ * @note 读取寄存器 0x3C (2字节)
+ */
+int16_t USL_GetCurrent(Usart_DataTypeDef *usart, uint8_t servo_id)
+{
+    uint8_t statusCode;
+    uint8_t content[2];
+    content[0] = 0x3C;  // 电流寄存器地址
+    content[1] = 0x02;  // 读取2字节
+
+    JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+	// 全双工UART：舵机会回显命令，需清空接收缓冲区
+	ClearServoRxBuf_Safe(usart->recvBuf);
+
+    PackageTypeDef pkg;
+    statusCode = USL_RecvPackage(usart, &pkg);
+    if (statusCode == JOHO_STATUS_SUCCESS) {
+        // 小端格式: content[0]=低字节, content[1]=高字节
+        return (int16_t)(pkg.content[0] | (pkg.content[1] << 8));
+    }
+    return 0xFFFF;
+}
+
+/**
+ * @brief 批量读取舵机状态: 角度+电压+电流+温度 (一次通讯)
+ * @param usart 串口句柄
+ * @param servo_id 舵机ID
+ * @param position 输出: 位置值 (0-4095)
+ * @param voltage  输出: 电压值 (0.1V单位)
+ * @param current  输出: 电流值 (有符号)
+ * @param temperature 输出: 温度值 (°C)
+ * @return 0=成功, 非0=错误码
+ * @note 从寄存器 0x38 开始连续读取6字节:
+ *       0x38-0x39: 位置(2字节)
+ *       0x3A:       电压(1字节)
+ *       0x3B:       温度(1字节)
+ *       0x3C-0x3D: 电流(2字节)
+ */
+uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
+                           uint16_t *position, uint16_t *voltage,
+                           int16_t *current, int8_t *temperature)
+{
+    uint8_t statusCode;
+    uint8_t content[2];
+    content[0] = 0x38;  // 起始寄存器地址(位置)
+    content[1] = 0x06;  // 连续读取6字节: pos(2)+voltage(1)+temp(1)+current(2)
+
+    JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+	// 全双工UART：舵机会回显命令，需清空接收缓冲区
+	ClearServoRxBuf_Safe(usart->recvBuf);
+
+    PackageTypeDef pkg;
+    statusCode = USL_RecvPackage(usart, &pkg);
+    if (statusCode == JOHO_STATUS_SUCCESS) {
+        // content[0-1]: 位置 (小端)
+        if (position) *position = pkg.content[0] | (pkg.content[1] << 8);
+        // content[2]: 电压 (1字节, 0.1V)
+        if (voltage) *voltage = (uint16_t)pkg.content[2];
+        // content[3]: 温度 (1字节, °C)
+        if (temperature) *temperature = (int8_t)pkg.content[3];
+        // content[4-5]: 电流 (2字节, 有符号, 小端)
+        if (current) *current = (int16_t)(pkg.content[4] | (pkg.content[5] << 8));
+        return JOHO_STATUS_SUCCESS;
+    }
+    return statusCode;
 }

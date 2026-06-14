@@ -67,6 +67,51 @@ static void USART1_SendByte(uint8_t byte)
     USART1->DR = byte;
 }
 
+// ========== 角度换算：以中心(2048)为0°, 向左为负, 向右为正 ==========
+
+// 舵机原始值(0-4095) → 相对中心的角度(°) 范围 -180°~+180°
+static float RawToRelativeDegree(uint16_t raw)
+{
+    if (raw > 4095) return -999.0f;
+    return raw * 360.0f / 4095.0f - 180.0f;
+}
+
+// 相对角度(°) → 舵机原始值(0-4095)
+static uint16_t RelativeDegreeToRaw(float relDeg)
+{
+    float absDeg = relDeg + 180.0f;  // 转为 0~360°
+    if (absDeg < 0.0f) absDeg = 0.0f;
+    if (absDeg > 360.0f) absDeg = 360.0f;
+    return (uint16_t)(absDeg * 4095.0f / 360.0f);
+}
+
+// 清空舵机接收缓冲区(防止上次残留数据干扰下次读取)
+// 发送命令后需等待所有回显字节到达,再清空,否则最后1-2个回显字节可能在
+// 清空之后才到达(中断延迟),导致响应帧头被污染而解析超时
+static void ClearServoRxBuf(void)
+{
+    /* 等待残余回显字节到达(约2ms足够所有回显字节在115200bps下到达) */
+    SysTick_DelayMs(2);
+    RingBuffer_Reset(servoUsart->recvBuf);
+}
+
+// 读取单个寄存器(通用), 返回读取到的值, 失败返回0xFFFF
+static uint16_t ReadReg(uint8_t addr, uint8_t len)
+{
+    uint8_t content[2];
+    content[0] = addr;
+    content[1] = len;
+    JOHO_PackageBuild_Send(servoUsart, 1, 4, CMDType_Read, content);
+    ClearServoRxBuf();
+
+    PackageTypeDef pkg;
+    if (USL_RecvPackage(servoUsart, &pkg) == JOHO_STATUS_SUCCESS) {
+        if (len == 1) return pkg.content[0];
+        return pkg.content[0] | (pkg.content[1] << 8);  // 小端
+    }
+    return 0xFFFF;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -95,8 +140,8 @@ int main(void)
   led.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOF, &led);
 
-  /* USER CODE END Init */
-
+  /* USER 
+  
   /* Configure the system clock */
   SystemClock_Config();
 
@@ -114,64 +159,124 @@ int main(void)
   /* === USART1 硬件测试：直接寄存器发送一个字节 ===
      如果这一步 PA9 有波形/串口能看到 'U'(0x55)，说明USART1硬件没问题
      如果看不到，CH340接线可能错了 */
-  HAL_Delay(50);  // 等USART稳定
-  USART1_SendByte('U');  // 0x55 -> 01010101，示波器看最清楚
-  HAL_Delay(10);
-  USART1_SendByte('A');
-  HAL_Delay(10);
-  USART1_SendByte('R');
-  HAL_Delay(10);
-  USART1_SendByte('T');
-  HAL_Delay(10);
-  USART1_SendByte('\n');
-  HAL_Delay(10);
+  
 
   USART_InitServoUsart(&huart3);
   JOHO_STATUS statusCode;
 
-  printf("====================================\r\n");
-  printf("F407_JOHO Servo Debug Starting...\r\n");
-  printf("USART1(PA9-TX) = Debug Console @115200\r\n");
-  printf("USART3(PB10-TX -> Servo RX, PB11-RX <- Servo TX) @115200\r\n");
-  printf("====================================\r\n");
-
-  /* 半双工模式：只发送不接收，直接控制舵机 */
-  printf("\r\n=== Send-only mode: Sweeping Servo ID=1 ===\r\n");
-  printf("If servo moves, USART3 wiring is OK!\r\n");
+  
+  printf("\r\n=== Servo Control: full-duplex, center→left 20°→right 20° ===\r\n");
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  int16_t angle = 0;
-  int8_t direction = 1;
-  uint32_t loopCount = 0;
+  uint8_t servoId = 0;            // 检测到的舵机ID
+
+  // ====== 1. Ping 舵机，自动检测ID（轮询1~3）==========
+  printf("\r\n[Init] Scanning servo IDs 1~3...\r\n");
+  for (uint8_t tryId = 1; tryId <= 3; tryId++) {
+      printf("  Pinging ID=%d... ", tryId);
+      statusCode = US_Ping(servoUsart, tryId);
+      if (statusCode == JOHO_STATUS_SUCCESS) {
+          printf("OK!\r\n");
+          servoId = tryId;
+          break;
+      }
+      printf("err=%d\r\n", statusCode);
+  }
+
+  if (servoId == 0) {
+      printf("[Init] No servo found! Check wiring & power.\r\n");
+      printf("       USART3 full-duplex: PB10=TX, PB11=RX\r\n");
+      printf("[Init] Forcing servoId=1 (write may work but read will fail if ID mismatch)\r\n");
+      servoId = 1;  // 继续尝试
+  }
+
+  // ====== 2. 使能扭矩 ======
+  printf("\r\n[Init] Torque enable for ID=%d...\r\n", servoId);
+  SET_Torque(servoUsart, servoId, 1);
+  SysTick_DelayMs(200);
+
+  // ====== 3. 通过USART3发送角度信号，转到中间位置(2048=0°)，停顿5秒后读取实际角度 ======
+  printf("\r\n[Move] Send angle command via USART3 to center (2048 = 0°)...\r\n");
+  ClearServoRxBuf();
+  USL_SetServoAngle(servoUsart, servoId, 2048.0f, 1000);
+
+  // 停顿5秒等待舵机到达
+  printf("[Wait] 5 seconds for servo to reach center...\r\n");
+  for (uint8_t i = 5; i > 0; i--) {
+      printf("  %d...\r\n", i);
+      SysTick_DelayMs(1000);
+  }
+
+  // 读取实际角度，核对是否到达中心
+  printf("\r\n[Verify] Reading actual position...\r\n");
+  ClearServoRxBuf();
+  uint16_t pos;
+  uint8_t statusErr = USL_GetServoStatus(servoUsart, servoId, &pos, NULL, NULL, NULL);
+  if (statusErr == JOHO_STATUS_SUCCESS) {
+      printf("\r\n[Verify] Actual position = %u (raw), %+.1f° (relative)\r\n",
+             pos, RawToRelativeDegree(pos));
+      if (pos >= 2020 && pos <= 2076) {
+          printf("[Verify] ✓ At center position!\r\n");
+      } else {
+          printf("[Verify] ✗ Not at center, delta = %d\r\n", (int16_t)pos - 2048);
+      }
+  } else {
+      printf("\r\n[Verify] Read position failed, err=%d\r\n", statusErr);
+  }
+
+  // 到达中心位置，通过USART1发送串口信号
+  printf("\r\n*** Center position reached! (2048 = 0°) ***\r\n");
+  HAL_UART_Transmit(&huart1, (uint8_t *)"CENTER_REACHED\r\n", 16, HAL_MAX_DELAY);
+
+  // ====== 4. 循环：左转20° → 右转20°，每次延时1秒并读取状态 ======
+  printf("\r\n========== Servo Motion Test (20° left/right) ==========\r\n");
+
+  uint16_t leftRaw  = RelativeDegreeToRaw(-20.0f);   // 左转20°  ≈ 1820
+  uint16_t rightRaw = RelativeDegreeToRaw(20.0f);    // 右转20°  ≈ 2275
 
   while (1)
   {
-    loopCount++;
-
     HAL_GPIO_TogglePin(GPIOF, GPIO_PIN_9);
 
-    // 发送角度指令（不等待回复）
-    USL_SetServoAngle(servoUsart, 1, angle, 800);
+    // ----- 左转20° -----
+    printf("\r\n[Left] 20° (raw=%u)...\r\n", leftRaw);
+    ClearServoRxBuf();
+    USL_SetServoAngle(servoUsart, servoId, (float)leftRaw, 500);
+    SysTick_DelayMs(1000);
 
-    if (angle % 500 == 0 || angle == 0 || angle == 4095) {
-        printf("[Loop %lu] Sending angle=%d\r\n", loopCount, angle);
+    // 读取电压/温度/电流
+    ClearServoRxBuf();
+    uint16_t pos, volt;
+    int16_t curr;
+    int8_t temp;
+    uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+    if (err == JOHO_STATUS_SUCCESS) {
+        printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
+               RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
+    } else {
+        printf("  Read status err=%d\r\n", err);
     }
 
-    angle += direction * 50;
-    if (angle >= 4095) {
-        angle = 4095;
-        direction = -1;
-        printf(">>> Direction DOWN\r\n");
-    } else if (angle <= 0) {
-        angle = 0;
-        direction = 1;
-        printf(">>> Direction UP\r\n");
+    // ----- 右转20° -----
+    printf("\r\n[Right] 20° (raw=%u)...\r\n", rightRaw);
+    ClearServoRxBuf();
+    USL_SetServoAngle(servoUsart, servoId, (float)rightRaw, 500);
+    SysTick_DelayMs(1000);
+
+    // 读取电压/温度/电流
+    ClearServoRxBuf();
+    err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+    if (err == JOHO_STATUS_SUCCESS) {
+        printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
+               RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
+    } else {
+        printf("  Read status err=%d\r\n", err);
     }
 
-    SysTick_DelayMs(30);
+    printf("TEST IS BE INTERRUPT ACCIDENTLLY");
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
