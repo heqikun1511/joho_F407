@@ -31,6 +31,34 @@ static uint8_t servoUsart_recvBufData[256];
 static Usart_DataTypeDef servoUsartData;
 Usart_DataTypeDef *servoUsart = &servoUsartData;
 
+/**
+ * @brief  发送完成后释放TX引脚（半双工模式需要）
+ *         将PB10从AF_PP改为INPUT，让舵机能驱动数据线
+ */
+void Servo_ReleaseTX(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_10;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+/**
+ * @brief  发送前使能TX引脚（半双工模式需要）
+ *         将PB10从INPUT改回AF_PP
+ */
+void Servo_EnableTX(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_10;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
 void Usart_SendAll(Usart_DataTypeDef *usart)
 {
     uint16_t len = RingBuffer_GetByteUsed(usart->sendBuf);
@@ -182,7 +210,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* PB11: USART3_RX - 必须使用复用推挽输出模式，否则USART3收不到数据 */
+    /* PB11: USART3_RX - 复用推挽模式(标准CubeMX配置,连接USART外设) */
     GPIO_InitStruct.Pin = GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
@@ -285,6 +313,7 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
 
 /* USER CODE BEGIN 1 */
 static uint8_t rx_byte;  // USART3 单字节接收缓冲区
+volatile uint32_t usart3_rx_count = 0;  // USART3接收字节计数器(调试用)
 
 /**
  * @brief  __io_putchar - 重定向 printf 到 USART1 (PA9-TX, PA10-RX)
@@ -312,6 +341,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     if (huart->Instance == USART3)
     {
         RingBuffer_Push(servoUsart->recvBuf, rx_byte);
+        usart3_rx_count++;  // 调试计数
         HAL_UART_Receive_IT(huart, &rx_byte, 1);
     }
 }

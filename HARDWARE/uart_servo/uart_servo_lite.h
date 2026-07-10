@@ -3,6 +3,9 @@
 #include "sys_tick.h"
 #include "ring_buffer.h"
 
+// ====== 调试选项: 取消注释可输出原始接收字节 ======
+#define DEBUG_SERVO_RAW
+
 // 状态码
 #define JOHO_STATUS uint8_t
 #define JOHO_STATUS_SUCCESS 0 // 发送/获取成功
@@ -22,12 +25,12 @@
 
 #define JOHO_US_NUM 254 //舵机ID最大值
 
-// 串口通讯超时时间 (原100ms, 增加到200ms保证充分等待)
-#define JOHO_TIMEOUT_MS 200
+// 串口通讯超时时间 (原100ms, 增加到500ms保证充分等待)
+#define JOHO_TIMEOUT_MS 500
 
-// 在串口舵机通讯系统协议中, 使用的字节序为Little Endian(小端字节序/小端格式)
-// STM32系统默认值存储模式为Little Endian
-// 比如0xfeff 为帧头值, 在实际发送的时候低位在前: 0xff, 0xfe
+// 注意: JOHO舵机协议使用Big Endian(大端字节序/大端格式)
+// 即多字节数据时: 高字节在前(低地址), 低字节在后(高地址)
+// STM32是Little Endian, 所以在发送/接收多字节时需要转换字节序
 #define JOHO_PACK_REQUEST_HEADER		0xffff
 #define JOHO_PACK_RESPONSE_HEADER		0xf5ff
 

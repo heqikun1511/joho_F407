@@ -26,6 +26,7 @@
 #include "usart.h"
 #include "ring_buffer.h"
 #include "uart_servo_lite.h"
+#include "test_servo.h"
 
 /* USER CODE END Includes */
 
@@ -47,6 +48,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+extern volatile uint32_t usart3_rx_count;  // USART3接收字节计数(调试用)
 
 /* USER CODE END PV */
 
@@ -85,14 +87,10 @@ static uint16_t RelativeDegreeToRaw(float relDeg)
     return (uint16_t)(absDeg * 4095.0f / 360.0f);
 }
 
-// 清空舵机接收缓冲区(防止上次残留数据干扰下次读取)
-// 发送命令后需等待所有回显字节到达,再清空,否则最后1-2个回显字节可能在
-// 清空之后才到达(中断延迟),导致响应帧头被污染而解析超时
+// 全双工: 无需清空缓冲区(无回显), 仅等待舵机响应
 static void ClearServoRxBuf(void)
 {
-    /* 等待残余回显字节到达(约2ms足够所有回显字节在115200bps下到达) */
-    SysTick_DelayMs(2);
-    RingBuffer_Reset(servoUsart->recvBuf);
+    SysTick_DelayMs(20);
 }
 
 // 读取单个寄存器(通用), 返回读取到的值, 失败返回0xFFFF
@@ -107,7 +105,8 @@ static uint16_t ReadReg(uint8_t addr, uint8_t len)
     PackageTypeDef pkg;
     if (USL_RecvPackage(servoUsart, &pkg) == JOHO_STATUS_SUCCESS) {
         if (len == 1) return pkg.content[0];
-        return pkg.content[0] | (pkg.content[1] << 8);  // 小端
+        // 大端模式: content[0]=高字节, content[1]=低字节
+        return (pkg.content[0] << 8) | pkg.content[1];
     }
     return 0xFFFF;
 }
@@ -162,15 +161,11 @@ int main(void)
   
 
   USART_InitServoUsart(&huart3);
+
+  // ====== 裸数据测试 ======
+  RunServoTest();
+
   JOHO_STATUS statusCode;
-
-  
-  printf("\r\n=== Servo Control: full-duplex, center→left 20°→right 20° ===\r\n");
-
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
   uint8_t servoId = 0;            // 检测到的舵机ID
 
   // ====== 1. Ping 舵机，自动检测ID（轮询1~3）==========
@@ -189,8 +184,11 @@ int main(void)
   if (servoId == 0) {
       printf("[Init] No servo found! Check wiring & power.\r\n");
       printf("       USART3 full-duplex: PB10=TX, PB11=RX\r\n");
+      printf("[Init] RX count before Ping loop = %lu\r\n", usart3_rx_count);
       printf("[Init] Forcing servoId=1 (write may work but read will fail if ID mismatch)\r\n");
-      servoId = 1;  // 继续尝试
+      servoId = 1;
+  } else {
+      printf("[Init] Ping OK, total RX bytes = %lu\r\n", usart3_rx_count);
   }
 
   // ====== 2. 使能扭矩 ======
@@ -248,11 +246,15 @@ int main(void)
     SysTick_DelayMs(1000);
 
     // 读取电压/温度/电流
+    printf("  [DBG] RX count before read = %lu\r\n", usart3_rx_count);
+    uint32_t rx_before = usart3_rx_count;
     ClearServoRxBuf();
     uint16_t pos, volt;
     int16_t curr;
     int8_t temp;
     uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+    uint32_t rx_delta = usart3_rx_count - rx_before;
+    printf("  [DBG] RX count after read = %lu (delta=%lu)\r\n", usart3_rx_count, rx_delta);
     if (err == JOHO_STATUS_SUCCESS) {
         printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
                RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
@@ -267,8 +269,12 @@ int main(void)
     SysTick_DelayMs(1000);
 
     // 读取电压/温度/电流
+    printf("  [DBG] RX count before read = %lu\r\n", usart3_rx_count);
+    rx_before = usart3_rx_count;
     ClearServoRxBuf();
     err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+    rx_delta = usart3_rx_count - rx_before;
+    printf("  [DBG] RX count after read = %lu (delta=%lu)\r\n", usart3_rx_count, rx_delta);
     if (err == JOHO_STATUS_SUCCESS) {
         printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
                RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
@@ -276,6 +282,7 @@ int main(void)
         printf("  Read status err=%d\r\n", err);
     }
 
+    
     printf("TEST IS BE INTERRUPT ACCIDENTLLY");
     /* USER CODE END WHILE */
 

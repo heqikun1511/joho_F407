@@ -59,6 +59,7 @@ Core/Src/system_stm32f4xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c \
 Core/Src/sys_tick.c \
+Core/Src/test_servo.c \
 HARDWARE/ring_buffer/ring_buffer.c \
 HARDWARE/uart_servo/uart_servo_lite.c
 
