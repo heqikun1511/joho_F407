@@ -31,11 +31,20 @@ static uint8_t servoUsart_recvBufData[256];
 static Usart_DataTypeDef servoUsartData;
 Usart_DataTypeDef *servoUsart = &servoUsartData;
 
-/**
- * @brief  发送完成后释放TX引脚（半双工模式需要）
- *         将PB10从AF_PP改为INPUT，让舵机能驱动数据线
- */
-void Servo_ReleaseTX(void)
+/* 半双工: 发送前PB10切推挽输出 */
+static void TX_Enable(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin = GPIO_PIN_10;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_NOPULL;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+/* 半双工: 发送后PB10切输入(高阻),S线稳定无噪声 */
+static void TX_Release(void)
 {
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin = GPIO_PIN_10;
@@ -44,29 +53,26 @@ void Servo_ReleaseTX(void)
     HAL_GPIO_Init(GPIOB, &gpio);
 }
 
-/**
- * @brief  发送前使能TX引脚（半双工模式需要）
- *         将PB10从INPUT改回AF_PP
- */
-void Servo_EnableTX(void)
-{
-    GPIO_InitTypeDef gpio = {0};
-    gpio.Pin = GPIO_PIN_10;
-    gpio.Mode = GPIO_MODE_AF_PP;
-    gpio.Pull = GPIO_PULLUP;
-    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    gpio.Alternate = GPIO_AF7_USART3;
-    HAL_GPIO_Init(GPIOB, &gpio);
-}
-
 void Usart_SendAll(Usart_DataTypeDef *usart)
 {
     uint16_t len = RingBuffer_GetByteUsed(usart->sendBuf);
     if (len == 0) return;
 
+    TX_Enable();
     uint8_t data[256];
     RingBuffer_ReadByteArray(usart->sendBuf, data, len);
     HAL_UART_Transmit(usart->huart, data, len, HAL_MAX_DELAY);
+    TX_Release();
+
+    /* 清除 USART 错误标志 (ORE/FE/NE)：发送过程中回显字节可能导致 ORE 被置位，
+       一旦 ORE 置位 USART 将停止产生 RXNE 中断，后续通讯会永久超时。
+       这里通过读 SR 再读 DR 的顺序清除 ORE（STM32 标准清除序列） */
+    volatile uint32_t tmp = usart->huart->Instance->SR;
+    (void)tmp;  /* 先读 SR */
+    tmp = usart->huart->Instance->DR;
+    (void)tmp;  /* 再读 DR，清除 ORE */
+    /* 确保 RXNEIE 仍使能 */
+    usart->huart->Instance->CR1 |= USART_CR1_RXNEIE;
 }
 /* USER CODE END 0 */
 
@@ -199,21 +205,22 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     __HAL_RCC_USART3_CLK_ENABLE();
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    /**USART3 GPIO Configuration (全双工: PB10=TX, PB11=RX)
-    PB10     ------> USART3_TX (推挽输出)
-    PB11     ------> USART3_RX (浮空输入)
+    /**USART3 GPIO Configuration (半双工: PB10=开漏+上拉,不发时自动高阻)
+    PB10     ------> USART3_TX (开漏输出,空闲时高阻,舵机可拉低)
+    PB11     ------> USART3_RX (复用输入)
     */
+    /* PB10: 推挽输出(发送时用),发完后切输入(无噪声) */
     GPIO_InitStruct.Pin = GPIO_PIN_10;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* PB11: USART3_RX - 复用推挽模式(标准CubeMX配置,连接USART外设) */
+    /* PB11: USART3_RX - 复用推挽(连接USART接收器) */
     GPIO_InitStruct.Pin = GPIO_PIN_11;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -342,7 +349,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     {
         RingBuffer_Push(servoUsart->recvBuf, rx_byte);
         usart3_rx_count++;  // 调试计数
-        HAL_UART_Receive_IT(huart, &rx_byte, 1);
+
+        /* 直接重新使能 RXNE 中断，绕过 HAL_UART_Receive_IT
+           原因：HAL_UART_IRQHandler 在调用本回调之后才将 RxState 置为 READY，
+           此时调用 HAL_UART_Receive_IT 会因为 RxState!=READY 而返回 HAL_BUSY，
+           导致 RXNEIE 无法重新使能，中断永久关闭。 */
+        huart->RxState = HAL_UART_STATE_READY;
+        huart->RxXferCount = 1;
+        __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
     }
 }
 
@@ -354,7 +368,7 @@ void USART_InitServoUsart(UART_HandleTypeDef *huart)
     servoUsartData.recvBuf = &servoUsart_recvBuf;
     servoUsartData.huart = huart;
 
-    /* 启动 USART3 中断接收，使舵机返回数据能进入环形缓冲区 */
+    /* 启动 USART3 中断接收 */
     HAL_UART_Receive_IT(huart, &rx_byte, 1);
 }
 /* USER CODE END 1 */

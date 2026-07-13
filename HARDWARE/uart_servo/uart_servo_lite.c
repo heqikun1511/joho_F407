@@ -138,33 +138,32 @@ JOHO_STATUS USL_RecvPackage(Usart_DataTypeDef *usart,PackageTypeDef *pkg){
             // 接收帧头 - 同时支持两种字节序:
             //   - 大端(协议标准): F5 FF
             //   - 小端(MCU原生):  FF F5
-            //   - 请求帧头回显:    FF FF
+            // 注意: 响应帧头是FF F5, 回显FF FF会被自动跳过
             uint8_t byte = RingBuffer_ReadByte(usart->recvBuf);
 #ifdef DEBUG_SERVO_RAW
             if (rawIdx < sizeof(rawBytes)) rawBytes[rawIdx++] = byte;
 #endif
 
             if (header == 0) {
-                // 第一个字节: 0xF5(大端F5FF首字节) 或 0xFF(小端FFF5/FFFF首字节)
+                // 第一个字节: 0xF5(大端F5FF首字节) 或 0xFF(小端FFF5首字节)
                 if (byte == 0xF5 || byte == 0xFF) {
                     header = byte;
-                } // else 不匹配,保持header=0,跳过该字节
+                } // else 不匹配,跳过该字节
             } else {
                 // 已有第一个字节,读取第二个字节后组合判断
                 uint16_t hdrBE = (header << 8) | byte;   // 大端组合: header=F5 → F5 FF
                 uint16_t hdrLE = (byte << 8) | header;   // 小端组合: header=FF → FF F5
 
-                // 接受的响应帧头: 0xF5FF(舵机专用) 或 0xFFFF(回显/通用)
-                if (hdrBE == JOHO_PACK_RESPONSE_HEADER || hdrLE == JOHO_PACK_RESPONSE_HEADER ||
-                    hdrBE == JOHO_PACK_REQUEST_HEADER || hdrLE == JOHO_PACK_REQUEST_HEADER) {
+                // 只接受响应帧头 0xF5FF
+                if (hdrBE == JOHO_PACK_RESPONSE_HEADER || hdrLE == JOHO_PACK_RESPONSE_HEADER) {
                     // 帧头匹配成功
-                    pkg->header = hdrBE;  // 保存实际收到的帧头
+                    pkg->header = JOHO_PACK_RESPONSE_HEADER;
                     pkg->status = JOHO_RECV_FLAG_HEADER;
                 } else if (byte == 0xF5 || byte == 0xFF) {
                     // 当前字节也可能是下一个帧头的首字节,保留它
                     header = byte;
                 } else {
-                    header = 0;  // 完全复位,重新搜索帧头
+                    header = 0;  // 完全复位,重新搜索
                 }
             }
         }
@@ -247,9 +246,8 @@ JOHO_STATUS US_Ping(Usart_DataTypeDef *usart, uint8_t servo_id){
 //	printf("[PING]Send Ping Package\r\n");
 	// 发送Ping请求
 	JOHO_PackageBuild_Send(usart, servo_id, 2,CMDType_Ping, NULL);
-	// 全双工: 无回显,直接等待舵机响应(不清缓冲区)
-	SysTick_DelayMs(20);
-	// 接收返回的Ping响应
+	// 等回显到达后直接接收(帧头检测自动跳过回显,只认FF F5)
+	SysTick_DelayMs(5);
 	PackageTypeDef pkg;
 	statusCode = USL_RecvPackage(usart, &pkg);
 	if(statusCode == JOHO_STATUS_SUCCESS){
@@ -274,7 +272,6 @@ if(posi > 4095)posi = 4095;
 if(posi <0 )		posi  = 0;			
 
 uint16_t posit = posi;
-uint16_t time;			
 uint8_t content[5];
 					//示例：角度0~4095  FF FF 01 07 03 2A 00 00 03 E8 DF
 content[0] =0x2A;
@@ -300,9 +297,8 @@ uint16_t value = 0xffff;
 	content[1] =0x02;
 	/// 发送协议帧
 	JOHO_PackageBuild_Send(usart, servo_id, 4,CMDType_Read,content);
-	// 全双工: 无回显,直接等待舵机响应(不清缓冲区)
-	SysTick_DelayMs(20);
-	// 接收返回的pkg
+	// 等回显后直接接收(帧头检测跳过回显)
+	SysTick_DelayMs(5);
 	PackageTypeDef pkg;
 	statusCode = USL_RecvPackage(usart, &pkg);
 	if(statusCode == 0) {
@@ -342,8 +338,8 @@ uint16_t USL_GetVoltage(Usart_DataTypeDef *usart, uint8_t servo_id)
     content[1] = 0x01;  // 读取1字节
 
     JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
-	// 全双工: 无回显,直接等待舵机响应(不清缓冲区)
-	SysTick_DelayMs(20);
+	// 等回显后直接接收(帧头检测跳过回显)
+	SysTick_DelayMs(5);
 
     PackageTypeDef pkg;
     statusCode = USL_RecvPackage(usart, &pkg);
@@ -368,8 +364,8 @@ int16_t USL_GetCurrent(Usart_DataTypeDef *usart, uint8_t servo_id)
     content[1] = 0x02;  // 读取2字节
 
     JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
-	// 全双工: 无回显,直接等待舵机响应(不清缓冲区)
-	SysTick_DelayMs(20);
+	// 等回显后直接接收(帧头检测跳过回显)
+	SysTick_DelayMs(5);
 
     PackageTypeDef pkg;
     statusCode = USL_RecvPackage(usart, &pkg);
@@ -405,7 +401,9 @@ uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
     content[1] = 0x06;  // 连续读取6字节: pos(2)+voltage(1)+temp(1)+current(2)
 
     JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
-	// 全双工: 无回显,直接等待舵机响应(不清缓冲区)
+	// 等回显到齐后清掉,再等舵机回复
+	SysTick_DelayMs(5);
+	ClearServoRxBuf_Safe(usart->recvBuf);
 	SysTick_DelayMs(20);
 
     PackageTypeDef pkg;

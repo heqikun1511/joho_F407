@@ -87,10 +87,10 @@ static uint16_t RelativeDegreeToRaw(float relDeg)
     return (uint16_t)(absDeg * 4095.0f / 360.0f);
 }
 
-// 全双工: 无需清空缓冲区(无回显), 仅等待舵机响应
+// 清空舵机接收缓冲区
 static void ClearServoRxBuf(void)
 {
-    SysTick_DelayMs(20);
+    RingBuffer_Reset(servoUsart->recvBuf);
 }
 
 // 读取单个寄存器(通用), 返回读取到的值, 失败返回0xFFFF
@@ -100,8 +100,8 @@ static uint16_t ReadReg(uint8_t addr, uint8_t len)
     content[0] = addr;
     content[1] = len;
     JOHO_PackageBuild_Send(servoUsart, 1, 4, CMDType_Read, content);
-    ClearServoRxBuf();
 
+    SysTick_DelayMs(5);
     PackageTypeDef pkg;
     if (USL_RecvPackage(servoUsart, &pkg) == JOHO_STATUS_SUCCESS) {
         if (len == 1) return pkg.content[0];

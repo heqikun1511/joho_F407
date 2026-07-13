@@ -75,18 +75,63 @@ void RunServoTest(void)
     
     USL_Send_HEX(servoUsart, 6, pingPkt);
     
-    // 等待50ms让舵机回复
     SysTick_DelayMs(50);
-    
     DumpAllRxBytes("After Ping");
     
-    // === 测试3: 等待更长时间(100ms)再读一次 ===
     SysTick_DelayMs(100);
     DumpAllRxBytes("After +100ms");
     
-    // === 测试4: 等待更长时间(200ms)再读一次 ===
+    // === 测试3: 先广播扭矩使能,再Ping ===
+    printf("\r\n[Test 3] Torque enable (broadcast ID=254), then Ping ID=1...\r\n");
+    RingBuffer_Reset(servoUsart->recvBuf);
+    
+    // 扭矩使能: FF FF FE 04 03 28 01 00(checksum)
+    uint8_t torquePkt[8];
+    torquePkt[0] = 0xFF; torquePkt[1] = 0xFF;
+    torquePkt[2] = 0xFE;  // 广播ID=254
+    torquePkt[3] = 0x04;  // size=4
+    torquePkt[4] = 0x03;  // CMDType_Write
+    torquePkt[5] = 0x28;  // Torque register
+    torquePkt[6] = 0x01;  // Torque ON
+    torquePkt[7] = (~(torquePkt[2] + torquePkt[3] + torquePkt[4] + torquePkt[5] + torquePkt[6])) & 0xFF;
+    
+    printf("  Torque cmd: ");
+    for (int i = 0; i < 8; i++) printf("%02X ", torquePkt[i]);
+    printf("\r\n");
+    USL_Send_HEX(servoUsart, 8, torquePkt);
+    SysTick_DelayMs(200);  // 等扭矩生效
+    
+    // 清空缓存,重新Ping
+    RingBuffer_Reset(servoUsart->recvBuf);
+    USL_Send_HEX(servoUsart, 6, pingPkt);
+    SysTick_DelayMs(50);
+    DumpAllRxBytes("After Torque+Ping");
     SysTick_DelayMs(200);
-    DumpAllRxBytes("After +200ms");
+    DumpAllRxBytes("After Torque+Ping+200ms");
+    
+    // === 测试4: 扭矩开后发送Read指令 ===
+    printf("\r\n[Test 4] Send Read ID=1 reg=0x38 len=2 (after torque ON)...\r\n");
+    RingBuffer_Reset(servoUsart->recvBuf);
+    
+    uint8_t readPkt[8];
+    readPkt[0] = 0xFF; readPkt[1] = 0xFF;
+    readPkt[2] = 0x01;  // ID=1
+    readPkt[3] = 0x04;  // size=4
+    readPkt[4] = 0x02;  // CMDType_Read
+    readPkt[5] = 0x38;  // 寄存器地址(角度)
+    readPkt[6] = 0x02;  // 读取2字节
+    readPkt[7] = (~(readPkt[2] + readPkt[3] + readPkt[4] + readPkt[5] + readPkt[6])) & 0xFF;
+    
+    printf("  Sending: ");
+    for (int i = 0; i < 8; i++) printf("%02X ", readPkt[i]);
+    printf("\r\n");
+    
+    USL_Send_HEX(servoUsart, 8, readPkt);
+    
+    SysTick_DelayMs(50);
+    DumpAllRxBytes("After Read +50ms");
+    SysTick_DelayMs(200);
+    DumpAllRxBytes("After Read +250ms");
     
     printf("\r\n========================================\r\n");
     printf("  裸数据测试完成\r\n");
