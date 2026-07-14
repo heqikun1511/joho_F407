@@ -427,48 +427,49 @@ uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
         }
     }
 
-    // 2. 读取电压+温度: 2字节, 寄存器 0x3A
-    if (voltage || temperature) {
-        content[0] = 0x3A;
-        content[1] = 0x02;
+    // 2. 读取电压: 1字节, 寄存器 0x3F
+    if (voltage) {
+        content[0] = 0x3F;
+        content[1] = 0x01;
         JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
         SysTick_DelayMs(20);
         uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
-        if (n >= 8) {
-            RingBuffer_ReadByte(usart->recvBuf); // h0=0xFF
-            RingBuffer_ReadByte(usart->recvBuf); // h1=0xF5
+        if (n >= 7) { // 1字节内容: 帧头2+ID1+size1+sstat1+data1+cs1=7字节
+            RingBuffer_ReadByte(usart->recvBuf); // h0
+            RingBuffer_ReadByte(usart->recvBuf); // h1
             RingBuffer_ReadByte(usart->recvBuf); // ID
             RingBuffer_ReadByte(usart->recvBuf); // size
             RingBuffer_ReadByte(usart->recvBuf); // sstat
-            if (voltage) *voltage = RingBuffer_ReadByte(usart->recvBuf);
-            if (temperature) *temperature = (int8_t)RingBuffer_ReadByte(usart->recvBuf);
+            *voltage = RingBuffer_ReadByte(usart->recvBuf); // 电压值(0.1V)
             RingBuffer_ReadByte(usart->recvBuf); // checksum
         } else {
-            if (voltage) *voltage = 0;
-            if (temperature) *temperature = 0;
+            *voltage = 0;
         }
     }
 
-    // 3. 读取电流: 2字节, 寄存器 0x3C (可选, 失败不返回错误)
-    if (current) {
-        content[0] = 0x3C;
-        content[1] = 0x02;
+    // 3. 读取温度: 1字节, 寄存器 0x3E
+    if (temperature) {
+        content[0] = 0x3E;
+        content[1] = 0x01;
         JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
         SysTick_DelayMs(20);
         uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
-        if (n >= 8) {
-            RingBuffer_ReadByte(usart->recvBuf); // h0=0xFF
-            RingBuffer_ReadByte(usart->recvBuf); // h1=0xF5
+        if (n >= 7) {
+            RingBuffer_ReadByte(usart->recvBuf); // h0
+            RingBuffer_ReadByte(usart->recvBuf); // h1
             RingBuffer_ReadByte(usart->recvBuf); // ID
             RingBuffer_ReadByte(usart->recvBuf); // size
             RingBuffer_ReadByte(usart->recvBuf); // sstat
-            uint8_t d0 = RingBuffer_ReadByte(usart->recvBuf);
-            uint8_t d1 = RingBuffer_ReadByte(usart->recvBuf);
+            *temperature = (int8_t)RingBuffer_ReadByte(usart->recvBuf); // 温度
             RingBuffer_ReadByte(usart->recvBuf); // checksum
-            *current = (int16_t)((d0 << 8) | d1);
         } else {
-            *current = 0;
+            *temperature = 0;
         }
+    }
+
+    // 4. 读取电流: 2字节, 寄存器 0x?? (暂未知, 跳过)
+    if (current) {
+        *current = 0;
     }
 
     return JOHO_STATUS_SUCCESS;
