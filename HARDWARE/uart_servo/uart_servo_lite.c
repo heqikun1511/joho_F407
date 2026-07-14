@@ -4,7 +4,7 @@
  ***/
 #include "uart_servo_lite.h"
 
-
+extern volatile uint32_t usart3_rx_count;
 
 //构建并发送需要的协议帧: 帧头	ID号	数据长度	指令类型	内容	校验和
 void JOHO_PackageBuild_Send(Usart_DataTypeDef *usart, uint8_t usId, uint8_t size,uint8_t cmdType, uint8_t *content){
@@ -395,29 +395,81 @@ uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
                            uint16_t *position, uint16_t *voltage,
                            int16_t *current, int8_t *temperature)
 {
-    uint8_t statusCode;
     uint8_t content[2];
-    content[0] = 0x38;  // 起始寄存器地址(位置)
-    content[1] = 0x06;  // 连续读取6字节: pos(2)+voltage(1)+temp(1)+current(2)
 
+    // 注意: 该舵机不支持一次读超过2字节，必须逐个读取
+
+    // 1. 读取位置: 2字节, 寄存器 0x38
+    content[0] = 0x38;
+    content[1] = 0x02;
     JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
-	// 等回显到齐后清掉,再等舵机回复
-	SysTick_DelayMs(5);
-	ClearServoRxBuf_Safe(usart->recvBuf);
-	SysTick_DelayMs(20);
-
-    PackageTypeDef pkg;
-    statusCode = USL_RecvPackage(usart, &pkg);
-    if (statusCode == JOHO_STATUS_SUCCESS) {
-        // 大端模式: content[0]=高字节, content[1]=低字节
-        if (position) *position = (pkg.content[0] << 8) | pkg.content[1];
-        // content[2]: 电压 (1字节, 0.1V)
-        if (voltage) *voltage = (uint16_t)pkg.content[2];
-        // content[3]: 温度 (1字节, °C)
-        if (temperature) *temperature = (int8_t)pkg.content[3];
-        // content[4-5]: 电流 (2字节, 有符号, 大端)
-        if (current) *current = (int16_t)((pkg.content[4] << 8) | pkg.content[5]);
-        return JOHO_STATUS_SUCCESS;
+    SysTick_DelayMs(30);
+    {
+        uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
+        if (n >= 8) {
+            RingBuffer_ReadByte(usart->recvBuf); // h0 (0xFF)
+            RingBuffer_ReadByte(usart->recvBuf); // h1 (0xF5)
+            uint8_t id = RingBuffer_ReadByte(usart->recvBuf);
+            RingBuffer_ReadByte(usart->recvBuf); // size
+            RingBuffer_ReadByte(usart->recvBuf); // sstat
+            uint8_t d0 = RingBuffer_ReadByte(usart->recvBuf);
+            uint8_t d1 = RingBuffer_ReadByte(usart->recvBuf);
+            uint8_t cs = RingBuffer_ReadByte(usart->recvBuf);
+            // 校验和验证: ~(ID + size + sstat + d0 + d1) & 0xFF
+            // 注意前面已读取了id, 用回传的id验证
+            if (id == servo_id) {
+                if (position) *position = (d0 << 8) | d1;
+            } else {
+                return JOHO_STATUS_ID_NOT_MATCH;
+            }
+        } else {
+            return JOHO_STATUS_TIMEOUT;
+        }
     }
-    return statusCode;
+
+    // 2. 读取电压+温度: 2字节, 寄存器 0x3A
+    if (voltage || temperature) {
+        content[0] = 0x3A;
+        content[1] = 0x02;
+        JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+        SysTick_DelayMs(20);
+        uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
+        if (n >= 8) {
+            RingBuffer_ReadByte(usart->recvBuf); // h0=0xFF
+            RingBuffer_ReadByte(usart->recvBuf); // h1=0xF5
+            RingBuffer_ReadByte(usart->recvBuf); // ID
+            RingBuffer_ReadByte(usart->recvBuf); // size
+            RingBuffer_ReadByte(usart->recvBuf); // sstat
+            if (voltage) *voltage = RingBuffer_ReadByte(usart->recvBuf);
+            if (temperature) *temperature = (int8_t)RingBuffer_ReadByte(usart->recvBuf);
+            RingBuffer_ReadByte(usart->recvBuf); // checksum
+        } else {
+            if (voltage) *voltage = 0;
+            if (temperature) *temperature = 0;
+        }
+    }
+
+    // 3. 读取电流: 2字节, 寄存器 0x3C (可选, 失败不返回错误)
+    if (current) {
+        content[0] = 0x3C;
+        content[1] = 0x02;
+        JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+        SysTick_DelayMs(20);
+        uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
+        if (n >= 8) {
+            RingBuffer_ReadByte(usart->recvBuf); // h0=0xFF
+            RingBuffer_ReadByte(usart->recvBuf); // h1=0xF5
+            RingBuffer_ReadByte(usart->recvBuf); // ID
+            RingBuffer_ReadByte(usart->recvBuf); // size
+            RingBuffer_ReadByte(usart->recvBuf); // sstat
+            uint8_t d0 = RingBuffer_ReadByte(usart->recvBuf);
+            uint8_t d1 = RingBuffer_ReadByte(usart->recvBuf);
+            RingBuffer_ReadByte(usart->recvBuf); // checksum
+            *current = (int16_t)((d0 << 8) | d1);
+        } else {
+            *current = 0;
+        }
+    }
+
+    return JOHO_STATUS_SUCCESS;
 }

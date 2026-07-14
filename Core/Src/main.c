@@ -55,7 +55,8 @@ extern volatile uint32_t usart3_rx_count;  // USART3接收字节计数(调试用
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+// 调试: 打印USART3硬件寄存器状态
+static void USART3_DumpStatus(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -91,6 +92,55 @@ static uint16_t RelativeDegreeToRaw(float relDeg)
 static void ClearServoRxBuf(void)
 {
     RingBuffer_Reset(servoUsart->recvBuf);
+}
+
+// 调试: 打印USART3硬件寄存器状态和缓冲区内容
+static void USART3_DumpStatus(void)
+{
+    uint32_t sr = USART3->SR;
+    uint32_t cr1 = USART3->CR1;
+
+    printf("\r\n=== USART3 DEBUG ===\r\n");
+    printf("SR=0x%08lX", sr);
+    if (sr & USART_SR_PE)   printf(" PE");
+    if (sr & USART_SR_FE)   printf(" FE");
+    if (sr & USART_SR_NE)   printf(" NE");
+    if (sr & USART_SR_ORE)  printf(" ORE");
+    if (sr & USART_SR_IDLE) printf(" IDLE");
+    if (sr & USART_SR_RXNE) printf(" RXNE");
+    if (sr & USART_SR_TC)   printf(" TC");
+    if (sr & USART_SR_TXE)  printf(" TXE");
+    printf("\r\n");
+
+    printf("CR1=0x%08lX", cr1);
+    if (cr1 & USART_CR1_RE)     printf(" RE");
+    if (cr1 & USART_CR1_TE)     printf(" TE");
+    if (cr1 & USART_CR1_RXNEIE) printf(" RXNEIE");
+    if (cr1 & USART_CR1_PEIE)   printf(" PEIE");
+    printf("\r\n");
+
+    /* RXNE置位时，直接读DR看是否有数据卡住 */
+    if (sr & USART_SR_RXNE) {
+        uint8_t stuck_byte = (uint8_t)(USART3->DR & 0xFF);
+        printf("DR has stuck byte: 0x%02X\r\n", stuck_byte);
+        /* 注意: 读DR会清除RXNE */
+    }
+
+    /* 查看环形缓冲区状态 */
+    uint16_t used = RingBuffer_GetByteUsed(servoUsart->recvBuf);
+    uint16_t free = RingBuffer_GetByteFree(servoUsart->recvBuf);
+    printf("RingBuf: used=%u free=%u rx_count=%lu\r\n",
+           used, free, usart3_rx_count);
+
+    /* 打印缓冲区内容 */
+    if (used > 0) {
+        printf("RingBuf data:");
+        for (uint16_t i = 0; i < used && i < 64; i++) {
+            printf(" %02X", RingBuffer_GetValueByIndex(servoUsart->recvBuf, i));
+        }
+        printf("\r\n");
+    }
+    printf("==================\r\n");
 }
 
 // 读取单个寄存器(通用), 返回读取到的值, 失败返回0xFFFF
@@ -196,94 +246,77 @@ int main(void)
   SET_Torque(servoUsart, servoId, 1);
   SysTick_DelayMs(200);
 
-  // ====== 3. 通过USART3发送角度信号，转到中间位置(2048=0°)，停顿5秒后读取实际角度 ======
-  printf("\r\n[Move] Send angle command via USART3 to center (2048 = 0°)...\r\n");
+  // ====== 3. 转到中间位置(2048=0°)，停顿5秒后读取状态 ======
+  printf("\r\n[Move] Send angle command to center (2048 = 0°)...\r\n");
   ClearServoRxBuf();
   USL_SetServoAngle(servoUsart, servoId, 2048.0f, 1000);
-
-  // 停顿5秒等待舵机到达
   printf("[Wait] 5 seconds for servo to reach center...\r\n");
   for (uint8_t i = 5; i > 0; i--) {
       printf("  %d...\r\n", i);
       SysTick_DelayMs(1000);
   }
 
-  // 读取实际角度，核对是否到达中心
-  printf("\r\n[Verify] Reading actual position...\r\n");
-  ClearServoRxBuf();
-  uint16_t pos;
-  uint8_t statusErr = USL_GetServoStatus(servoUsart, servoId, &pos, NULL, NULL, NULL);
-  if (statusErr == JOHO_STATUS_SUCCESS) {
-      printf("\r\n[Verify] Actual position = %u (raw), %+.1f° (relative)\r\n",
-             pos, RawToRelativeDegree(pos));
-      if (pos >= 2020 && pos <= 2076) {
-          printf("[Verify] ✓ At center position!\r\n");
-      } else {
-          printf("[Verify] ✗ Not at center, delta = %d\r\n", (int16_t)pos - 2048);
+  // 读取中心位置和各状态
+  printf("\r\n[Verify] Center position status:\r\n");
+  {
+      uint16_t pos, volt;
+      int16_t curr;
+      int8_t temp;
+      uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+      if (err == JOHO_STATUS_SUCCESS) {
+          printf("  Position=%u (%+.1f°) | Voltage=%u.%uV | Current=%+dmA | Temp=%+d°C\r\n",
+                 pos, RawToRelativeDegree(pos),
+                 volt / 10, volt % 10, curr, temp);
       }
-  } else {
-      printf("\r\n[Verify] Read position failed, err=%d\r\n", statusErr);
   }
 
-  // 到达中心位置，通过USART1发送串口信号
-  printf("\r\n*** Center position reached! (2048 = 0°) ***\r\n");
-  HAL_UART_Transmit(&huart1, (uint8_t *)"CENTER_REACHED\r\n", 16, HAL_MAX_DELAY);
-
-  // ====== 4. 循环：左转20° → 右转20°，每次延时1秒并读取状态 ======
-  printf("\r\n========== Servo Motion Test (20° left/right) ==========\r\n");
-
-  uint16_t leftRaw  = RelativeDegreeToRaw(-20.0f);   // 左转20°  ≈ 1820
-  uint16_t rightRaw = RelativeDegreeToRaw(20.0f);    // 右转20°  ≈ 2275
+  // ====== 4. 动态循环：左20° → 右20°，每步读取状态 ======
+  printf("\r\n========== Servo Motion Test ==========\r\n");
+  uint16_t leftRaw  = RelativeDegreeToRaw(-20.0f);   // ≈1820
+  uint16_t rightRaw = RelativeDegreeToRaw(20.0f);    // ≈2275
 
   while (1)
   {
     HAL_GPIO_TogglePin(GPIOF, GPIO_PIN_9);
 
-    // ----- 左转20° -----
+    // 左转20°
     printf("\r\n[Left] 20° (raw=%u)...\r\n", leftRaw);
     ClearServoRxBuf();
     USL_SetServoAngle(servoUsart, servoId, (float)leftRaw, 500);
-    SysTick_DelayMs(1000);
-
-    // 读取电压/温度/电流
-    printf("  [DBG] RX count before read = %lu\r\n", usart3_rx_count);
-    uint32_t rx_before = usart3_rx_count;
-    ClearServoRxBuf();
-    uint16_t pos, volt;
-    int16_t curr;
-    int8_t temp;
-    uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
-    uint32_t rx_delta = usart3_rx_count - rx_before;
-    printf("  [DBG] RX count after read = %lu (delta=%lu)\r\n", usart3_rx_count, rx_delta);
-    if (err == JOHO_STATUS_SUCCESS) {
-        printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
-               RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
-    } else {
-        printf("  Read status err=%d\r\n", err);
+    SysTick_DelayMs(500);
+    {
+        uint16_t pos, volt;
+        int16_t curr;
+        int8_t temp;
+        uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+        if (err == JOHO_STATUS_SUCCESS) {
+            printf("  Pos=%u (%+.1f°) | Volt=%u.%uV | Cur=%+dmA | Temp=%+d°C\r\n",
+                   pos, RawToRelativeDegree(pos),
+                   volt / 10, volt % 10, curr, temp);
+        } else {
+            printf("  Read err=%d\r\n", err);
+        }
     }
 
-    // ----- 右转20° -----
-    printf("\r\n[Right] 20° (raw=%u)...\r\n", rightRaw);
+    // 右转20°
+    printf("[Right] 20° (raw=%u)...\r\n", rightRaw);
     ClearServoRxBuf();
     USL_SetServoAngle(servoUsart, servoId, (float)rightRaw, 500);
-    SysTick_DelayMs(1000);
-
-    // 读取电压/温度/电流
-    printf("  [DBG] RX count before read = %lu\r\n", usart3_rx_count);
-    rx_before = usart3_rx_count;
-    ClearServoRxBuf();
-    err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
-    rx_delta = usart3_rx_count - rx_before;
-    printf("  [DBG] RX count after read = %lu (delta=%lu)\r\n", usart3_rx_count, rx_delta);
-    if (err == JOHO_STATUS_SUCCESS) {
-        printf("  Angle=%+6.1fdeg | Voltage=%5.1fV | Current=%+5dmA | Temp=%+3dC\r\n",
-               RawToRelativeDegree(pos), volt * 0.1f, curr, temp);
-    } else {
-        printf("  Read status err=%d\r\n", err);
+    SysTick_DelayMs(500);
+    {
+        uint16_t pos, volt;
+        int16_t curr;
+        int8_t temp;
+        uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
+        if (err == JOHO_STATUS_SUCCESS) {
+            printf("  Pos=%u (%+.1f°) | Volt=%u.%uV | Cur=%+dmA | Temp=%+d°C\r\n",
+                   pos, RawToRelativeDegree(pos),
+                   volt / 10, volt % 10, curr, temp);
+        } else {
+            printf("  Read err=%d\r\n", err);
+        }
     }
 
-    
-    printf("TEST IS BE INTERRUPT ACCIDENTLLY");
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

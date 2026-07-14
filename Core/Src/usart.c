@@ -64,15 +64,10 @@ void Usart_SendAll(Usart_DataTypeDef *usart)
     HAL_UART_Transmit(usart->huart, data, len, HAL_MAX_DELAY);
     TX_Release();
 
-    /* 清除 USART 错误标志 (ORE/FE/NE)：发送过程中回显字节可能导致 ORE 被置位，
-       一旦 ORE 置位 USART 将停止产生 RXNE 中断，后续通讯会永久超时。
-       这里通过读 SR 再读 DR 的顺序清除 ORE（STM32 标准清除序列） */
-    volatile uint32_t tmp = usart->huart->Instance->SR;
-    (void)tmp;  /* 先读 SR */
-    tmp = usart->huart->Instance->DR;
-    (void)tmp;  /* 再读 DR，清除 ORE */
-    /* 确保 RXNEIE 仍使能 */
-    usart->huart->Instance->CR1 |= USART_CR1_RXNEIE;
+    /* 注意: 不能在这里清除 USART 错误标志!
+       因为 __HAL_UART_CLEAR_PEFLAG 会读取 DR 寄存器，
+       如果舵机已开始回复，第一个字节会被读走而丢失！
+       错误清除交由 HAL_UART_ErrorCallback 处理。 */
 }
 /* USER CODE END 0 */
 
@@ -350,13 +345,26 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         RingBuffer_Push(servoUsart->recvBuf, rx_byte);
         usart3_rx_count++;  // 调试计数
 
-        /* 直接重新使能 RXNE 中断，绕过 HAL_UART_Receive_IT
-           原因：HAL_UART_IRQHandler 在调用本回调之后才将 RxState 置为 READY，
-           此时调用 HAL_UART_Receive_IT 会因为 RxState!=READY 而返回 HAL_BUSY，
-           导致 RXNEIE 无法重新使能，中断永久关闭。 */
+        /* 重新使能单字节中断接收（HAL 在调用本回调前已将 RxState 置为 READY） */
+        HAL_UART_Receive_IT(huart, &rx_byte, 1);
+    }
+}
+
+/**
+ * @brief  USART 错误回调：当 USART3 发生 ORE/FE/NE 等错误时被 HAL 调用。
+ *         清除错误标志并重新挂起 RX 中断，防止通讯永久中断。
+ */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3)
+    {
+        /* 读 SR→读 DR 清除 USART 错误标志 (ORE/FE/NE/PE) */
+        __HAL_UART_CLEAR_PEFLAG(huart);
+        huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+        /* 重新挂起 RX 中断 */
         huart->RxState = HAL_UART_STATE_READY;
-        huart->RxXferCount = 1;
-        __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
+        HAL_UART_Receive_IT(huart, &rx_byte, 1);
     }
 }
 
