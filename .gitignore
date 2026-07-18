@@ -1,5 +1,68 @@
-build/*
+# ============================================
+# STM32 / Embedded Build Artifacts
+# ============================================
+build/
+Debug/
+Release/
+*.o
+*.d
 *.lst
+*.su
 *.elf
 *.bin
+*.hex
 *.map
+*.crf
+*.htm
+*.dep
+*.axf
+*.sct
+
+# ============================================
+# IDE / Editor
+# ============================================
+# VS Code (只保留有意的项目设置，忽略缓存/数据库)
+.vscode/browse.vc.db
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal
+.vscode/ipch/
+.vscode/tags/
+.vscode/tags.sort/
+.vscode/*.log
+.idea/
+*.swp
+*.swo
+*~
+*.bk
+*.bak
+
+# ============================================
+# Python (辅助脚本的虚拟环境)
+# ============================================
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ============================================
+# OS files
+# ============================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ============================================
+# Merge / Patch leftovers
+# ============================================
+*.orig
+*.rej
+*.patch
+
+# ============================================
+# CubeMX backups
+# ============================================
+*.ioc.bak
