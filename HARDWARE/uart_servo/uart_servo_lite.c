@@ -467,9 +467,26 @@ uint8_t USL_GetServoStatus(Usart_DataTypeDef *usart, uint8_t servo_id,
         }
     }
 
-    // 4. 读取电流: 2字节, 寄存器 0x?? (暂未知, 跳过)
+    // 4. 读取电流: 2字节, 寄存器 0x2E
     if (current) {
-        *current = 0;
+        content[0] = 0x2E;
+        content[1] = 0x02;
+        JOHO_PackageBuild_Send(usart, servo_id, 4, CMDType_Read, content);
+        SysTick_DelayMs(20);
+        uint16_t n = RingBuffer_GetByteUsed(usart->recvBuf);
+        if (n >= 8) {
+            RingBuffer_ReadByte(usart->recvBuf); // h0
+            RingBuffer_ReadByte(usart->recvBuf); // h1
+            RingBuffer_ReadByte(usart->recvBuf); // ID
+            RingBuffer_ReadByte(usart->recvBuf); // size
+            RingBuffer_ReadByte(usart->recvBuf); // sstat
+            uint8_t d0 = RingBuffer_ReadByte(usart->recvBuf);
+            uint8_t d1 = RingBuffer_ReadByte(usart->recvBuf);
+            RingBuffer_ReadByte(usart->recvBuf); // checksum
+            *current = (int16_t)((d0 << 8) | d1);
+        } else {
+            *current = 0;
+        }
     }
 
     return JOHO_STATUS_SUCCESS;

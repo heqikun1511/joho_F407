@@ -27,6 +27,8 @@
 #include "ring_buffer.h"
 #include "uart_servo_lite.h"
 #include "test_servo.h"
+#include "math.h"
+#include "step.h"
 
 /* USER CODE END Includes */
 
@@ -62,13 +64,13 @@ static void USART3_DumpStatus(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /* USART1 直接寄存器方式发送一个字节（绕过HAL，纯硬件测试） */
-static void USART1_SendByte(uint8_t byte)
-{
-    /* 等待TXE（发送数据寄存器空） */
-    while (!(USART1->SR & USART_SR_TXE)) {}
-    /* 写入数据寄存器 */
-    USART1->DR = byte;
-}
+// static void USART1_SendByte(uint8_t byte)
+// {
+//     /* 等待TXE（发送数据寄存器空） */
+//     while (!(USART1->SR & USART_SR_TXE)) {}
+//     /* 写入数据寄存器 */
+//     USART1->DR = byte;
+// }
 
 // ========== 角度换算：以中心(2048)为0°, 向左为负, 向右为正 ==========
 
@@ -94,54 +96,54 @@ static void ClearServoRxBuf(void)
     RingBuffer_Reset(servoUsart->recvBuf);
 }
 
-// 调试: 打印USART3硬件寄存器状态和缓冲区内容
-static void USART3_DumpStatus(void)
-{
-    uint32_t sr = USART3->SR;
-    uint32_t cr1 = USART3->CR1;
+// // 调试: 打印USART3硬件寄存器状态和缓冲区内容
+// static void USART3_DumpStatus(void)
+// {
+//     uint32_t sr = USART3->SR;
+//     uint32_t cr1 = USART3->CR1;
 
-    printf("\r\n=== USART3 DEBUG ===\r\n");
-    printf("SR=0x%08lX", sr);
-    if (sr & USART_SR_PE)   printf(" PE");
-    if (sr & USART_SR_FE)   printf(" FE");
-    if (sr & USART_SR_NE)   printf(" NE");
-    if (sr & USART_SR_ORE)  printf(" ORE");
-    if (sr & USART_SR_IDLE) printf(" IDLE");
-    if (sr & USART_SR_RXNE) printf(" RXNE");
-    if (sr & USART_SR_TC)   printf(" TC");
-    if (sr & USART_SR_TXE)  printf(" TXE");
-    printf("\r\n");
+//     printf("\r\n=== USART3 DEBUG ===\r\n");
+//     printf("SR=0x%08lX", sr);
+//     if (sr & USART_SR_PE)   printf(" PE");
+//     if (sr & USART_SR_FE)   printf(" FE");
+//     if (sr & USART_SR_NE)   printf(" NE");
+//     if (sr & USART_SR_ORE)  printf(" ORE");
+//     if (sr & USART_SR_IDLE) printf(" IDLE");
+//     if (sr & USART_SR_RXNE) printf(" RXNE");
+//     if (sr & USART_SR_TC)   printf(" TC");
+//     if (sr & USART_SR_TXE)  printf(" TXE");
+//     printf("\r\n");
 
-    printf("CR1=0x%08lX", cr1);
-    if (cr1 & USART_CR1_RE)     printf(" RE");
-    if (cr1 & USART_CR1_TE)     printf(" TE");
-    if (cr1 & USART_CR1_RXNEIE) printf(" RXNEIE");
-    if (cr1 & USART_CR1_PEIE)   printf(" PEIE");
-    printf("\r\n");
+//     printf("CR1=0x%08lX", cr1);
+//     if (cr1 & USART_CR1_RE)     printf(" RE");
+//     if (cr1 & USART_CR1_TE)     printf(" TE");
+//     if (cr1 & USART_CR1_RXNEIE) printf(" RXNEIE");
+//     if (cr1 & USART_CR1_PEIE)   printf(" PEIE");
+//     printf("\r\n");
 
-    /* RXNE置位时，直接读DR看是否有数据卡住 */
-    if (sr & USART_SR_RXNE) {
-        uint8_t stuck_byte = (uint8_t)(USART3->DR & 0xFF);
-        printf("DR has stuck byte: 0x%02X\r\n", stuck_byte);
-        /* 注意: 读DR会清除RXNE */
-    }
+//     /* RXNE置位时，直接读DR看是否有数据卡住 */
+//     if (sr & USART_SR_RXNE) {
+//         uint8_t stuck_byte = (uint8_t)(USART3->DR & 0xFF);
+//         printf("DR has stuck byte: 0x%02X\r\n", stuck_byte);
+//         /* 注意: 读DR会清除RXNE */
+//     }
 
-    /* 查看环形缓冲区状态 */
-    uint16_t used = RingBuffer_GetByteUsed(servoUsart->recvBuf);
-    uint16_t free = RingBuffer_GetByteFree(servoUsart->recvBuf);
-    printf("RingBuf: used=%u free=%u rx_count=%lu\r\n",
-           used, free, usart3_rx_count);
+//     /* 查看环形缓冲区状态 */
+//     uint16_t used = RingBuffer_GetByteUsed(servoUsart->recvBuf);
+//     uint16_t free = RingBuffer_GetByteFree(servoUsart->recvBuf);
+//     printf("RingBuf: used=%u free=%u rx_count=%lu\r\n",
+//            used, free, usart3_rx_count);
 
-    /* 打印缓冲区内容 */
-    if (used > 0) {
-        printf("RingBuf data:");
-        for (uint16_t i = 0; i < used && i < 64; i++) {
-            printf(" %02X", RingBuffer_GetValueByIndex(servoUsart->recvBuf, i));
-        }
-        printf("\r\n");
-    }
-    printf("==================\r\n");
-}
+//     /* 打印缓冲区内容 */
+//     if (used > 0) {
+//         printf("RingBuf data:");
+//         for (uint16_t i = 0; i < used && i < 64; i++) {
+//             printf(" %02X", RingBuffer_GetValueByIndex(servoUsart->recvBuf, i));
+//         }
+//         printf("\r\n");
+//     }
+//     printf("==================\r\n");
+// }
 
 // 读取单个寄存器(通用), 返回读取到的值, 失败返回0xFFFF
 static uint16_t ReadReg(uint8_t addr, uint8_t len)
@@ -189,8 +191,8 @@ int main(void)
   led.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOF, &led);
 
-  /* USER 
-  
+  /* USER CODE END Init */
+
   /* Configure the system clock */
   SystemClock_Config();
 
@@ -257,65 +259,54 @@ int main(void)
   }
 
   // 读取中心位置和各状态
-  printf("\r\n[Verify] Center position status:\r\n");
-  {
-      uint16_t pos, volt;
-      int16_t curr;
-      int8_t temp;
-      uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
-      if (err == JOHO_STATUS_SUCCESS) {
-          printf("  Position=%u (%+.1f°) | Voltage=%u.%uV | Current=%+dmA | Temp=%+d°C\r\n",
-                 pos, RawToRelativeDegree(pos),
-                 volt / 10, volt % 10, curr, temp);
-      }
-  }
+ 
 
-  // ====== 4. 动态循环：左20° → 右20°，每步读取状态 ======
-  printf("\r\n========== Servo Motion Test ==========\r\n");
-  uint16_t leftRaw  = RelativeDegreeToRaw(-20.0f);   // ≈1820
-  uint16_t rightRaw = RelativeDegreeToRaw(20.0f);    // ≈2275
+// 
+  // ====== 4. 螺旋翻滚测试 ======
+  printf("\r\n========== Spiral Roll Test ==========\r\n");
+  uint32_t startTick = HAL_GetTick();
 
   while (1)
   {
-    HAL_GPIO_TogglePin(GPIOF, GPIO_PIN_9);
+    float t = (float)(HAL_GetTick() - startTick) / 1000.0f;
 
-    // 左转20°
-    printf("\r\n[Left] 20° (raw=%u)...\r\n", leftRaw);
+    // 计算螺旋翻滚角度
+    float theta_y, theta_p;
+    steptheta_spiral(t, &theta_y, &theta_p);
+
+    uint16_t raw_y = DegToServoRaw(theta_y);
+    uint16_t raw_p = DegToServoRaw(theta_p);
+
+    // 控制舵机
     ClearServoRxBuf();
-    USL_SetServoAngle(servoUsart, servoId, (float)leftRaw, 500);
-    SysTick_DelayMs(500);
-    {
+    USL_SetServoAngle(servoUsart, servoId,     (float)raw_y, 100);
+    ClearServoRxBuf();
+    USL_SetServoAngle(servoUsart, servoId + 1, (float)raw_p, 100);
+
+    // 每0.5秒打印一次
+    static uint32_t lastPrint = 0;
+    if (HAL_GetTick() - lastPrint > 500) {
+        lastPrint = HAL_GetTick();
+
+        printf("t=%.1fs  θ_y=%+.1f°(raw=%4u)  θ_p=%+.1f°(raw=%4u)\r\n",
+               t, theta_y, raw_y, theta_p, raw_p);
+        printf("\r\n[Verify] Center position status:\r\n");
+
+        // 清空缓冲区，避免残留回显干扰读取
+        ClearServoRxBuf();
+
         uint16_t pos, volt;
         int16_t curr;
         int8_t temp;
         uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
         if (err == JOHO_STATUS_SUCCESS) {
-            printf("  Pos=%u (%+.1f°) | Volt=%u.%uV | Cur=%+dmA | Temp=%+d°C\r\n",
+            printf("  Position=%u (%+.1f°) | Voltage=%u.%uV | Current=%+dmA | Temp=%+d°C\r\n",
                    pos, RawToRelativeDegree(pos),
                    volt / 10, volt % 10, curr, temp);
-        } else {
-            printf("  Read err=%d\r\n", err);
         }
     }
 
-    // 右转20°
-    printf("[Right] 20° (raw=%u)...\r\n", rightRaw);
-    ClearServoRxBuf();
-    USL_SetServoAngle(servoUsart, servoId, (float)rightRaw, 500);
-    SysTick_DelayMs(500);
-    {
-        uint16_t pos, volt;
-        int16_t curr;
-        int8_t temp;
-        uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
-        if (err == JOHO_STATUS_SUCCESS) {
-            printf("  Pos=%u (%+.1f°) | Volt=%u.%uV | Cur=%+dmA | Temp=%+d°C\r\n",
-                   pos, RawToRelativeDegree(pos),
-                   volt / 10, volt % 10, curr, temp);
-        } else {
-            printf("  Read err=%d\r\n", err);
-        }
-    }
+    SysTick_DelayMs(20);
 
     /* USER CODE END WHILE */
 
@@ -323,7 +314,6 @@ int main(void)
   }
   /* USER CODE END 3 */
 }
-
 /**
   * @brief System Clock Configuration
   * @retval None
