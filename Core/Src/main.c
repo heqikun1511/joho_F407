@@ -29,6 +29,7 @@
 #include "test_servo.h"
 #include "math.h"
 #include "step.h"
+#include "gait.h"
 
 /* USER CODE END Includes */
 
@@ -262,51 +263,85 @@ int main(void)
  
 
 // 
-  // ====== 4. 螺旋翻滚测试 ======
-  printf("\r\n========== Spiral Roll Test ==========\r\n");
-  uint32_t startTick = HAL_GetTick();
+  // ====== 4. 步态控制器初始化 ======
+  printf("\r\n========== Gait Controller Demo ==========\r\n");
+
+  /* 定义步态控制器 */
+  GaitController gc;
+  uint8_t legCount = 2;  /* 2条腿, 每条腿2个舵机(偏航+俯仰) */
+
+  /* 初始化 */
+  Gait_Init(&gc, legCount);
+
+  /* ========== ID映射配置 ==========
+   *
+   * 方案A: 手动映射 (灵活, 支持任意ID分配)
+   *   每条腿指定: 偏航舵机ID, 俯仰舵机ID, 安装偏移补偿
+   */
+  Gait_SetMapping(&gc, 0,          /* 逻辑腿0 */
+                  servoId,         /* 偏航=检测到的ID */
+                  servoId + 1,     /* 俯仰=ID+1 */
+                  0.0f,            /* 偏航安装偏移 0° */
+                  0.0f);           /* 俯仰安装偏移 0° */
+
+  Gait_SetMapping(&gc, 1,          /* 逻辑腿1 */
+                  servoId + 2,     /* 偏航=ID+2 */
+                  servoId + 3,     /* 俯仰=ID+3 */
+                  0.0f,
+                  0.0f);
+
+  /* 方案B: 顺序映射 (舵机ID连续分配时更简洁) */
+  // Gait_SetMappingSequential(&gc, servoId);
+  // 效果同上: Leg0(Yaw=1,Pitch=2), Leg1(Yaw=3,Pitch=4), ...
+
+  /* ========== 选择步态 ========== */
+  Gait_SetParams(&gc, &GAIT_SPIRAL);  /* 螺旋翻滚 */
+  // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
+  // Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
+
+  /* ========== 使能所有舵机扭矩 ========== */
+  for (uint8_t i = 0; i < legCount; i++) {
+      if (gc.mapping[i].yaw_servo_id != 0)
+          SET_Torque(servoUsart, gc.mapping[i].yaw_servo_id, 1);
+      if (gc.mapping[i].pitch_servo_id != 0)
+          SET_Torque(servoUsart, gc.mapping[i].pitch_servo_id, 1);
+  }
+  SysTick_DelayMs(500);
 
   while (1)
   {
-    float t = (float)(HAL_GetTick() - startTick) / 1000.0f;
+    /* === 核心: 步态更新 ===
+     * 传入 HAL_GetTick() 作为时间基准
+     * 内部自动计算每条腿的角度并发送指令到对应的物理舵机
+     */
+    Gait_Update(&gc, HAL_GetTick());
 
-    // 计算螺旋翻滚角度
-    float theta_y, theta_p;
-    steptheta_spiral(t, &theta_y, &theta_p);
-
-    uint16_t raw_y = DegToServoRaw(theta_y);
-    uint16_t raw_p = DegToServoRaw(theta_p);
-
-    // 控制舵机
-    ClearServoRxBuf();
-    USL_SetServoAngle(servoUsart, servoId,     (float)raw_y, 100);
-    ClearServoRxBuf();
-    USL_SetServoAngle(servoUsart, servoId + 1, (float)raw_p, 100);
-
-    // 每0.5秒打印一次
+    // 每1秒打印一次
     static uint32_t lastPrint = 0;
-    if (HAL_GetTick() - lastPrint > 500) {
+    if (HAL_GetTick() - lastPrint > 1000) {
         lastPrint = HAL_GetTick();
 
-        printf("t=%.1fs  θ_y=%+.1f°(raw=%4u)  θ_p=%+.1f°(raw=%4u)\r\n",
-               t, theta_y, raw_y, theta_p, raw_p);
-        printf("\r\n[Verify] Center position status:\r\n");
+        float t = Gait_GetTime(&gc, HAL_GetTick());
+        printf("t=%.1fs\r\n", t);
 
-        // 清空缓冲区，避免残留回显干扰读取
-        ClearServoRxBuf();
+        for (uint8_t leg = 0; leg < legCount; leg++) {
+            float theta_y, theta_p;
+            Gait_CalcLeg(&gc, leg, t, &theta_y, &theta_p);
 
-        uint16_t pos, volt;
-        int16_t curr;
-        int8_t temp;
-        uint8_t err = USL_GetServoStatus(servoUsart, servoId, &pos, &volt, &curr, &temp);
-        if (err == JOHO_STATUS_SUCCESS) {
-            printf("  Position=%u (%+.1f°) | Voltage=%u.%uV | Current=%+dmA | Temp=%+d°C\r\n",
-                   pos, RawToRelativeDegree(pos),
-                   volt / 10, volt % 10, curr, temp);
+            float theta_y_deg = theta_y * (180.0f / M_PI);
+            float theta_p_deg = theta_p * (180.0f / M_PI);
+            uint16_t raw_y = Gait_RadianToRaw(theta_y);
+            uint16_t raw_p = Gait_RadianToRaw(theta_p);
+
+            printf("  Leg%u: Yaw=%+5.1f°(raw=%4u, ID=%u)  "
+                   "Pitch=%+5.1f°(raw=%4u, ID=%u)\r\n",
+                   leg,
+                   theta_y_deg, raw_y, gc.mapping[leg].yaw_servo_id,
+                   theta_p_deg, raw_p, gc.mapping[leg].pitch_servo_id);
         }
     }
 
-    SysTick_DelayMs(20);
+    SysTick_DelayMs(10);  /* 控制周期 ≈10ms */
 
     /* USER CODE END WHILE */
 

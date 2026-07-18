@@ -62,7 +62,8 @@ Core/Src/sys_tick.c \
 Core/Src/test_servo.c \
 HARDWARE/ring_buffer/ring_buffer.c \
 HARDWARE/uart_servo/uart_servo_lite.c\
-APP/step.c 
+APP/step.c \
+APP/gait.c 
 
 # ASM sources
 ASM_SOURCES =  \
