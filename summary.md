@@ -82,6 +82,73 @@ JOHO协议：请求 `0xFFFF`，响应 `0xFFF5`（小端）/ `0xF5FF`（大端）
 
 ---
 
+## Git 仓库瘦身记录
+
+### 问题
+Git 仓库体积膨胀到 **3.1 GB**，虽然加了 `.gitignore` 仍然无法上传。
+
+### 根因分析
+
+| 问题 | 大小 | 说明 |
+|------|------|------|
+| `.git/` pack 文件 | **3.01 GiB** | 历史中包含了大量大文件的每个版本 |
+| `.vscode/browse.vc.db` | **1.4 GB × 7 个版本** | VS Code 的 C/C++ 浏览缓存数据库被误提交，每次保存都会变更 |
+| `build/` 目录（81 个文件） | 被 Git 跟踪 | 虽然 `.gitignore` 写了 `build/`，但文件是在规则**之前**就被跟踪了，Git 不会自动 untrack |
+| `build/*.lst` 等多版本 | 每个 ~1 MB | .lst 等汇编列表文件有多份历史版本 |
+
+### 解决方案
+
+#### 第一步：更新 `.gitignore`（预防未来）
+完善了 `.gitignore`，新增忽略规则：
+- VS Code 缓存：`browse.vc.db` / `ipch/` / `tags/`
+- Python 虚拟环境：`.venv/` / `__pycache__/` / `*.pyc`
+- 更多构建产物：`*.crf` / `*.htm` / `*.dep` / `*.axf` / `*.sct`
+- 编辑器备份：`*.bk` / `*.bak` / `*.patch`
+
+#### 第二步：取消已跟踪文件的追踪
+```bash
+# 取消跟踪 build/ 目录（保留本地文件）
+git rm -r --cached build/
+git commit -m "chore: 取消跟踪 build 目录"
+```
+
+#### 第三步：从 Git 历史中彻底删除大文件
+使用 `git-filter-repo` 重写历史，从所有提交中永久删除：
+```bash
+pip install git-filter-repo
+git filter-repo --path '.vscode/browse.vc.db' \
+                --path '.vscode/browse.vc.db-shm' \
+                --path '.vscode/browse.vc.db-wal' \
+                --path 'build/' \
+                --invert-paths --force
+```
+
+> ⚠️ `git filter-repo` 会重写所有历史提交 hash。如果是多人协作项目，所有协作者需要重新 clone。
+
+### 效果对比
+
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| `.git/` 目录 | **3.1 GB** | **5.6 MB** |
+| Git pack | **3.01 GiB** | **~5 MiB** |
+| 工作目录 | 1.4 GB（含 browse.vc.db） | 63 MB |
+| 提交数 | 12 | 12（重写后） |
+
+### 远程推送须知
+因为 `git filter-repo` 重写了历史，推送时需要强制推送：
+```bash
+git push origin main --force
+```
+
+> ⚠️ 强制推送后，其他协作者需要重新 clone，或执行 `git fetch --force && git reset --hard origin/main`。
+
+### 日常维护建议
+1. **提交前检查**：用 `git status` 确认没有意外跟踪大文件
+2. **善用 `git status --short`**：`??` 开头的未跟踪文件如果不应提交，及时加入 `.gitignore`
+3. **`.gitignore` 模板**：STM32 项目可参考 [github/gitignore/C](https://github.com/github/gitignore/blob/main/C.gitignore)
+
+---
+
 ## 问题3：舵机不回复（推挽输出导致S线被强拉高）
 
 ### 现象

@@ -268,34 +268,26 @@ int main(void)
 
   /* 定义步态控制器 */
   GaitController gc;
-  uint8_t legCount = 2;  /* 2条腿, 每条腿2个舵机(偏航+俯仰) */
+  uint8_t legCount = 4;  /* 4条腿, 每条腿2个舵机(偏航+俯仰) = 控制8个舵机 */
 
   /* 初始化 */
   Gait_Init(&gc, legCount);
 
   /* ========== ID映射配置 ==========
-   *
-   * 方案A: 手动映射 (灵活, 支持任意ID分配)
-   *   每条腿指定: 偏航舵机ID, 俯仰舵机ID, 安装偏移补偿
+   * 顺序映射: servoId开始的连续ID
+   *   Leg0: Yaw=ID(1),   Pitch=ID(2)
+   *   Leg1: Yaw=ID(3),   Pitch=ID(4)
+   *   Leg2: Yaw=ID(5),   Pitch=ID(6)
+   *   Leg3: Yaw=ID(7),   Pitch=ID(8)
    */
-  Gait_SetMapping(&gc, 0,          /* 逻辑腿0 */
-                  servoId,         /* 偏航=检测到的ID */
-                  servoId + 1,     /* 俯仰=ID+1 */
-                  0.0f,            /* 偏航安装偏移 0° */
-                  0.0f);           /* 俯仰安装偏移 0° */
-
-  Gait_SetMapping(&gc, 1,          /* 逻辑腿1 */
-                  servoId + 2,     /* 偏航=ID+2 */
-                  servoId + 3,     /* 俯仰=ID+3 */
-                  0.0f,
-                  0.0f);
-
-  /* 方案B: 顺序映射 (舵机ID连续分配时更简洁) */
-  // Gait_SetMappingSequential(&gc, servoId);
+  Gait_SetMappingSequential(&gc, servoId);
   // 效果同上: Leg0(Yaw=1,Pitch=2), Leg1(Yaw=3,Pitch=4), ...
 
   /* ========== 选择步态 ========== */
-  Gait_SetParams(&gc, &GAIT_SPIRAL);  /* 螺旋翻滚 */
+  /* 先用螺旋翻滚测试所有舵机是否响应,所有腿振幅相同(35°) */
+  Gait_SetParams(&gc, &GAIT_SPIRAL);
+  // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
+  // Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
   // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
   // Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
 
