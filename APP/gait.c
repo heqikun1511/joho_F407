@@ -30,18 +30,7 @@ const GaitParams GAIT_SPIRAL = {
     .gamma_p   = 0.0f,
 };
 
-/** 三角步态示例 (6腿: 3+3分组交替) */
-const GaitParams GAIT_TRIPOD = {
-    .alpha_y   = 30.0f * (M_PI / 180.0f),   /* 30° 振幅 */
-    .alpha_p   = 25.0f * (M_PI / 180.0f),   /* 25° 振幅 */
-    .omega_y   = 2.0f * M_PI,                /* 2π rad/s */
-    .omega_p   = 2.0f * M_PI,                /* 2π rad/s */
-    .beta_y    = M_PI,                       /* π: 相邻腿反相(三脚步态) */
-    .beta_p    = M_PI,                       /* π: 相邻腿反相 */
-    .phi       = M_PI / 2.0f,                /* π/2 */
-    .gamma_y   = 0.0f,
-    .gamma_p   = -10.0f * (M_PI / 180.0f),  /* 俯仰微偏, 重心前倾 */
-};
+
 
 /** 波浪步态示例 (6腿: 依次抬起) */
 const GaitParams GAIT_WAVE = {
@@ -55,7 +44,33 @@ const GaitParams GAIT_WAVE = {
     .gamma_y   = 0.0f,
     .gamma_p   = 0.0f,
 };
+/*平面蜿蜒*/
+const GaitParams GAITFLAT={
+    .alpha_y   = 45.0f * (M_PI / 180.0f),   /* 20° */
+    .alpha_p   = 0.0f,   
+    .omega_y   = M_PI,                       /* π rad/s (T=2s, 更慢) */
+    .omega_p   = M_PI,                       /* π rad/s */
+    .beta_y    = M_PI / 3.0f,                /* π/3: 6腿均匀分布相位 */
+    .beta_p    = 0.0f,                /* π/3 */
+    .phi       = 0.0f,
+    .gamma_y   = 0.0f,
+    .gamma_p   = 0.0f,
 
+};
+const GaitParams GAIT_TEST={
+    .alpha_y   = 
+    .alpha_p   = 
+    .omega_y   = 
+    .omega_p   = 
+    .beta_y    = 
+    .beta_p    =               
+    .phi       = 
+    .gamma_y   = 
+    .gamma_p   = 
+
+}
+/*行波步态*/
+//const Gait
 /* ==================================================================
  * 内部辅助函数
  * ================================================================== */
@@ -107,8 +122,8 @@ void Gait_Init(GaitController *gc, uint8_t leg_count)
         gc->mapping[i].pitch_offset_deg = 0.0f;
     }
 
-    /* 默认使用三角步态参数 */
-    gc->params = GAIT_TRIPOD;
+    /* 默认使用平面蜿蜒参数 */
+    gc->params =GAIT_TEST;
 }
 
 void Gait_SetMapping(GaitController *gc, uint8_t leg_index,
@@ -203,6 +218,73 @@ void Gait_Update(GaitController *gc, uint32_t current_tick_ms)
 
         /* 发送俯仰舵机角度指令 */
         USL_SetServoAngle(servoUsart, map->pitch_servo_id, (float)raw_p, 100);
+    }
+
+    gc->last_update = current_tick_ms;
+}
+
+/**
+ * @brief 同步写模式更新 - 所有舵机角度一次通讯发送
+ *
+ * 收集所有腿的偏航+俯仰角度, 通过 USL_SyncWriteAngles 一次性发送
+ * 所有舵机几乎同时收到指令, 运动更同步
+ */
+void Gait_UpdateSync(GaitController *gc, uint32_t current_tick_ms)
+{
+    if (!gc || gc->leg_count == 0) return;
+
+    /* 首次调用时记录起始时间 */
+    if (gc->start_tick == 0) {
+        gc->start_tick = current_tick_ms;
+    }
+
+    /* 计算当前时间 t (秒) */
+    float t = Gait_GetTime(gc, current_tick_ms);
+
+    /* 收集所有舵机数据 (每条腿2个舵机: 偏航+俯仰) */
+    uint8_t  servo_ids[GAIT_MAX_LEGS * 2];
+    uint16_t positions[GAIT_MAX_LEGS * 2];
+    uint16_t intervals[GAIT_MAX_LEGS * 2];
+    uint8_t  servo_count = 0;
+
+    for (uint8_t leg = 0; leg < gc->leg_count; leg++) {
+        const LegServoMap *map = &gc->mapping[leg];
+
+        /* 跳过未映射的腿 */
+        if (map->yaw_servo_id == 0 && map->pitch_servo_id == 0) continue;
+
+        /* 计算偏航角和俯仰角 */
+        float theta_y_rad, theta_p_rad;
+        Gait_CalcLeg(gc, leg, t, &theta_y_rad, &theta_p_rad);
+
+        /* 弧度 → 度 + 安装偏移补偿 */
+        float theta_y_deg = theta_y_rad * (180.0f / M_PI) + map->yaw_offset_deg;
+        float theta_p_deg = theta_p_rad * (180.0f / M_PI) + map->pitch_offset_deg;
+
+        /* 度 → 舵机原始值 */
+        uint16_t raw_y = Gait_DegToRaw(theta_y_deg);
+        uint16_t raw_p = Gait_DegToRaw(theta_p_deg);
+
+        /* 收集偏航舵机 */
+        if (map->yaw_servo_id != 0) {
+            servo_ids[servo_count]   = map->yaw_servo_id;
+            positions[servo_count]   = raw_y;
+            intervals[servo_count]   = 100;  /* 100ms 到达 */
+            servo_count++;
+        }
+
+        /* 收集俯仰舵机 */
+        if (map->pitch_servo_id != 0) {
+            servo_ids[servo_count]   = map->pitch_servo_id;
+            positions[servo_count]   = raw_p;
+            intervals[servo_count]   = 100;
+            servo_count++;
+        }
+    }
+
+    /* 一次性同步发送所有角度 (超长自动分批) */
+    if (servo_count > 0) {
+        USL_SyncWriteAngles(servoUsart, servo_ids, positions, intervals, servo_count);
     }
 
     gc->last_update = current_tick_ms;

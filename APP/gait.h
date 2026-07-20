@@ -60,7 +60,10 @@ extern const GaitParams GAIT_TRIPOD;
 
 /** 波浪步态示例 (6腿机器人) */
 extern const GaitParams GAIT_WAVE;
-
+/*s水平扭动步态*/
+extern const GaitParams GAITFLAT;
+/*test*/
+extern const GaitParams  GAIT_TEST;
 /* ========== ID映射 ========== */
 
 /**
@@ -154,6 +157,23 @@ void Gait_CalcLeg(GaitController *gc, uint8_t leg_index, float t,
  *       建议控制周期 ≥ 20ms (50Hz)
  */
 void Gait_Update(GaitController *gc, uint32_t current_tick_ms);
+
+/**
+ * @brief 同步写模式更新 - 所有舵机角度一次通讯发送 (更高效)
+ * @param gc              控制器指针
+ * @param current_tick_ms 当前时间戳 (ms), 传入 HAL_GetTick()
+ *
+ * 与 Gait_Update 的区别:
+ *   - Gait_Update:     逐个发送, 每个舵机一条指令 (N条腿 × 2次串口通讯)
+ *   - Gait_UpdateSync: 收集所有角度, 通过同步写一次发送 (只需1~2次串口通讯)
+ *
+ * 优势: 所有舵机几乎同时接收到指令, 运动更同步
+ *       串口通讯次数大幅减少, 释放CPU时间
+ *
+ * 注意: 需要舵机固件支持 SyncWrite 指令 (CMDType_SyncWrite = 0x83)
+ *       每批最多 SYNC_WRITE_MAX_SERVOS 个舵机, 超长自动分批
+ */
+void Gait_UpdateSync(GaitController *gc, uint32_t current_tick_ms);
 
 /**
  * @brief 重启步态 (重置计时器)

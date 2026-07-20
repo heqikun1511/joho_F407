@@ -228,6 +228,63 @@ uint8_t JOHO_CalcChecksum(PackageTypeDef *pkg){
 
 
 /**
+ * 同步写角度 - 一次通讯设置多个舵机不同角度
+ *
+ * 协议帧格式 (JOHO SyncWrite):
+ *   FF FF FE <size> 83 <reg> <data_len> <ID1> <data1...> <ID2> <data2...> <CS>
+ *
+ * 对角度控制 (reg=0x2A, 每个舵机4字节数据: angle 2B + interval 2B):
+ *   FF FF FE <size> 83 2A 04 <ID1> <aH> <aL> <iH> <iL> <ID2> ... <CS>
+ *
+ * 若count超过 SYNC_WRITE_MAX_SERVOS, 自动分多次发送
+ **/
+void USL_SyncWriteAngles(Usart_DataTypeDef *usart,
+                         uint8_t *servo_ids,
+                         uint16_t *positions,
+                         uint16_t *intervals,
+                         uint8_t count)
+{
+    if (count == 0 || !usart || !servo_ids || !positions || !intervals) return;
+
+    uint8_t sent = 0;
+    while (sent < count) {
+        /* 每批最多 SYNC_WRITE_MAX_SERVOS 个舵机 */
+        uint8_t batch = count - sent;
+        if (batch > SYNC_WRITE_MAX_SERVOS) batch = SYNC_WRITE_MAX_SERVOS;
+
+        /* 构建内容: [reg=0x2A] [data_len=0x04] [ID1] [a1H] [a1L] [i1H] [i1L] [ID2] ... */
+        uint8_t content[2 + SYNC_WRITE_MAX_SERVOS * 5];
+        uint8_t idx = 0;
+
+        content[idx++] = 0x2A;  // 目标角度寄存器地址
+        content[idx++] = 0x04;  // 每个舵机4字节数据 (angle 2B + interval 2B)
+
+        for (uint8_t i = 0; i < batch; i++) {
+            uint8_t  sid  = servo_ids[sent + i];
+            uint16_t pos  = positions[sent + i];
+            uint16_t intr = intervals[sent + i];
+
+            content[idx++] = sid;
+            content[idx++] = (pos >> 8) & 0xFF;    // angle high byte (大端)
+            content[idx++] = pos & 0xFF;            // angle low byte
+            content[idx++] = (intr >> 8) & 0xFF;    // interval high byte (大端)
+            content[idx++] = intr & 0xFF;           // interval low byte
+        }
+
+        /* size = 2(usId+cmdType) + idx(content) */
+        uint8_t size = 2 + idx;
+
+        /* 发送同步写帧, 使用广播ID 0xFE */
+        JOHO_PackageBuild_Send(usart, 0xFE, size, CMDType_SyncWrite, content);
+
+        sent += batch;
+    }
+
+    /* 等待所有数据发送完成 + 回显到达 */
+    SysTick_DelayMs(5);
+}
+
+/**
  * 舵机控制SDK
  **/
 

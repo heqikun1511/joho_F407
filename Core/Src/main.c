@@ -285,12 +285,13 @@ int main(void)
 
   /* ========== 选择步态 ========== */
   /* 先用螺旋翻滚测试所有舵机是否响应,所有腿振幅相同(35°) */
-  Gait_SetParams(&gc, &GAIT_SPIRAL);
+  //Gait_SetParams(&gc, &GAITFLAT);
   // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
   // Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
   // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
-  // Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
-
+  //Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
+ // Gait_SetParams(&gc,&GAITFLAT);
+Gait_setParams(&gc,&GAIT_TEST);//测试id读取与识别，使能俯仰，行波步态
   /* ========== 使能所有舵机扭矩 ========== */
   for (uint8_t i = 0; i < legCount; i++) {
       if (gc.mapping[i].yaw_servo_id != 0)
@@ -306,7 +307,7 @@ int main(void)
      * 传入 HAL_GetTick() 作为时间基准
      * 内部自动计算每条腿的角度并发送指令到对应的物理舵机
      */
-    Gait_Update(&gc, HAL_GetTick());
+    Gait_UpdateSync(&gc, HAL_GetTick());
 
     // 每1秒打印一次
     static uint32_t lastPrint = 0;
@@ -331,6 +332,36 @@ int main(void)
                    theta_y_deg, raw_y, gc.mapping[leg].yaw_servo_id,
                    theta_p_deg, raw_p, gc.mapping[leg].pitch_servo_id);
         }
+
+        /* ========== 每1秒轮询一个舵机的温度+电流 ==========
+         * checkIdx 循环 0~7, 对应 8 个舵机
+         * 偶数→Yaw, 奇数→Pitch, idx/2→leg
+         */
+        static uint8_t checkIdx = 0;
+        uint8_t leg  = checkIdx / 2;
+        uint8_t side = checkIdx & 1;  // 0=Yaw, 1=Pitch
+        uint8_t sid  = side ? gc.mapping[leg].pitch_servo_id
+                            : gc.mapping[leg].yaw_servo_id;
+
+        if (sid != 0) {
+            /* 读取电流 */
+            int16_t current = USL_GetCurrent(servoUsart, sid);
+
+            /* 读取温度: 寄存器 0x3E, 1字节 */
+            int8_t temp = 0;
+            uint8_t tContent[2] = {0x3E, 0x01};
+            JOHO_PackageBuild_Send(servoUsart, sid, 4, CMDType_Read, tContent);
+            SysTick_DelayMs(5);
+            PackageTypeDef tPkg;
+            if (USL_RecvPackage(servoUsart, &tPkg) == JOHO_STATUS_SUCCESS) {
+                temp = (int8_t)tPkg.content[0];
+            }
+
+            printf("  [Check] ID=%2u: Temp=%3d°C, Current=%4d\r\n",
+                   sid, temp, current);
+        }
+
+        checkIdx = (checkIdx + 1) % (legCount * 2);
     }
 
     SysTick_DelayMs(10);  /* 控制周期 ≈10ms */

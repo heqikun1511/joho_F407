@@ -22,6 +22,11 @@
 #define CMDType_Ping 1
 #define CMDType_Read 2
 #define CMDType_Write 3
+#define CMDType_SyncWrite 0x83  // 同步写 (多个舵机不同角度, 一次指令)
+
+// 同步写每个包最多支持的舵机数
+// 受 pkg.content[50] 限制: 2(reg+len) + count*5 ≤ 50 → count ≤ 9
+#define SYNC_WRITE_MAX_SERVOS 9
 
 #define JOHO_US_NUM 254 //舵机ID最大值
 
@@ -83,6 +88,24 @@ uint8_t JOHO_CalcChecksum(PackageTypeDef *pkg);
 JOHO_STATUS US_Ping(Usart_DataTypeDef *usart, uint8_t servo_id);
 void USL_SetServoAngle(Usart_DataTypeDef *usart, uint8_t servo_id, \
 				float posi, uint16_t interval);
+
+/**
+ * @brief 同步写角度 - 一次通讯设置多个舵机的角度 (更高效)
+ *
+ * 协议帧格式:
+ *   FF FF FE <size> 83 2A 04 <ID1> <aH> <aL> <iH> <iL> <ID2> ... <CS>
+ *
+ * @param usart     串口句柄
+ * @param servo_ids 舵机ID数组
+ * @param positions 角度数组 (0~4095)
+ * @param intervals 时间数组 (ms)
+ * @param count     舵机数量 (≤ SYNC_WRITE_MAX_SERVOS, 超长自动分批)
+ */
+void USL_SyncWriteAngles(Usart_DataTypeDef *usart,
+                         uint8_t *servo_ids,
+                         uint16_t *positions,
+                         uint16_t *intervals,
+                         uint8_t count);
 
 uint16_t USL_GETPositionVal(Usart_DataTypeDef *usart, uint8_t servo_id);
 
