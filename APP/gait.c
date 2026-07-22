@@ -58,17 +58,16 @@ const GaitParams GAITFLAT={
 
 };
 const GaitParams GAIT_TEST={
-    .alpha_y   = 
-    .alpha_p   = 
-    .omega_y   = 
-    .omega_p   = 
-    .beta_y    = 
-    .beta_p    =               
-    .phi       = 
-    .gamma_y   = 
-    .gamma_p   = 
-
-}
+    .alpha_y   = 20.0f * (M_PI / 180.0f),   /* 20° */
+    .alpha_p   = 30.0f * (M_PI / 180.0f),   /* 30° */
+    .omega_y   = M_PI,                       /* π rad/s (T=2s) */
+    .omega_p   = M_PI,                       /* π rad/s */
+    .beta_y    = M_PI / 3.0f,                /* π/3 */
+    .beta_p    = M_PI / 3.0f,                /* π/3 */
+    .phi       = M_PI / 2.0f,
+    .gamma_y   = 0.0f,
+    .gamma_p   = 0.0f,
+};
 /*行波步态*/
 //const Gait
 /* ==================================================================

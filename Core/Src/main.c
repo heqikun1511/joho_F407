@@ -218,30 +218,26 @@ int main(void)
   // ====== 裸数据测试 ======
   RunServoTest();
 
-  JOHO_STATUS statusCode;
   uint8_t servoId = 0;            // 检测到的舵机ID
+  uint8_t found_ids[254];         // 全面扫描结果
 
-  // ====== 1. Ping 舵机，自动检测ID（轮询1~3）==========
-  printf("\r\n[Init] Scanning servo IDs 1~3...\r\n");
-  for (uint8_t tryId = 1; tryId <= 3; tryId++) {
-      printf("  Pinging ID=%d... ", tryId);
-      statusCode = US_Ping(servoUsart, tryId);
-      if (statusCode == JOHO_STATUS_SUCCESS) {
-          printf("OK!\r\n");
-          servoId = tryId;
-          break;
-      }
-      printf("err=%d\r\n", statusCode);
-  }
-
-  if (servoId == 0) {
-      printf("[Init] No servo found! Check wiring & power.\r\n");
-      printf("       USART3 full-duplex: PB10=TX, PB11=RX\r\n");
-      printf("[Init] RX count before Ping loop = %lu\r\n", usart3_rx_count);
-      printf("[Init] Forcing servoId=1 (write may work but read will fail if ID mismatch)\r\n");
-      servoId = 1;
+  // ====== 1. 全面扫描舵机ID（1~254）==========
+  printf("\r\n========================================\r\n");
+  printf("  开始全面舵机ID扫描...\r\n");
+  printf("========================================\r\n");
+  uint8_t found_count = ScanAllServoIDs(found_ids, 254);
+  
+  if (found_count > 0) {
+      servoId = found_ids[0];  // 使用第一个找到的舵机ID
+      printf("[Init] 总线共发现 %u 个舵机，使用 ID=%u 继续初始化\r\n", 
+             found_count, servoId);
   } else {
-      printf("[Init] Ping OK, total RX bytes = %lu\r\n", usart3_rx_count);
+      printf("[Init] 未找到任何舵机！请检查：\r\n");
+      printf("      1. 舵机供电是否正常\r\n");
+      printf("      2. USART3接线 (PB10=TX, PB11=RX)\r\n");
+      printf("      3. 转接板是否正常工作\r\n");
+      printf("[Init] 强制使用 servoId=1 继续\r\n");
+      servoId = 1;
   }
 
   // ====== 2. 使能扭矩 ======
@@ -291,7 +287,7 @@ int main(void)
   // Gait_SetParams(&gc, &GAIT_TRIPOD);  /* 三角步态 */
   //Gait_SetParams(&gc, &GAIT_WAVE);    /* 波浪步态 */
  // Gait_SetParams(&gc,&GAITFLAT);
-Gait_setParams(&gc,&GAIT_TEST);//测试id读取与识别，使能俯仰，行波步态
+Gait_SetParams(&gc,&GAIT_TEST);//测试id读取与识别，使能俯仰，行波步态
   /* ========== 使能所有舵机扭矩 ========== */
   for (uint8_t i = 0; i < legCount; i++) {
       if (gc.mapping[i].yaw_servo_id != 0)
